@@ -1,0 +1,51 @@
+{
+  "name": "FBLAROBLOXGAME",
+  "tree": {
+    "$className": "DataModel",
+
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$path": "src/server"
+    },
+
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "$path": "src/client"
+      }
+    },
+
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "Shared": {
+        "$path": "src/shared"
+      },
+      "NurseWorld": {
+        "$path": "src/ReplicatedStorage/NurseWorld"
+      }
+    },
+
+    "StarterGui": {
+      "$className": "StarterGui",
+      "FirstPersonLock": {
+        "$path": "src/StarterGui/FirstPersonLock.client.luau"
+      },
+      "NurseWorldUI": {
+        "$path": "src/StarterGui/NurseWorldUI.client.luau"
+      },
+      "Room2_Client": {
+        "$path": "src/StarterGui/Room2_Client.client.luau"
+      },
+      "Room3_Client": {
+        "$path": "src/StarterGui/Room3_Client.client.luau"
+      },
+      "WaypointClient": {
+        "$path": "src/StarterGui/WaypointClient.client.luau"
+      },
+      "ChefWorldUI": {
+        "$path": "src/StarterGui/ChefWorldUI.client.luau"
+      }
+    }
+  }
+}
