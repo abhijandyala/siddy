@@ -57,6 +57,29 @@ player.CharacterAdded:Connect(function(char)
 	if h then h.WalkSpeed = 0; h.JumpPower = 0; h.JumpHeight = 0 end
 end)
 
+--------------------------------------------------------------
+-- CHARACTER VISIBILITY (local-only, R15 safe)
+--------------------------------------------------------------
+local function hideLocalCharacter()
+	local char = player.Character
+	if not char then return end
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.LocalTransparencyModifier = 1
+		end
+	end
+end
+
+local function showLocalCharacter()
+	local char = player.Character
+	if not char then return end
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.LocalTransparencyModifier = 0
+		end
+	end
+end
+
 local function lockFP()
 	player.CameraMaxZoomDistance = 0.5
 end
@@ -230,8 +253,8 @@ local C = {
 	border  = Color3.fromRGB(88,  138, 182),
 	accent  = Color3.fromRGB(96,  152, 198),
 	text    = Color3.fromRGB(248, 250, 252),
-	textMut = Color3.fromRGB(168, 180, 198),
-	textSec = Color3.fromRGB(198, 206, 218),
+	textMut = Color3.fromRGB(200, 212, 228),  -- was 168/180/198 — brighter for readability
+	textSec = Color3.fromRGB(215, 222, 235),  -- was 198/206/218 — brighter for readability
 	btn     = Color3.fromRGB(228, 232, 238),
 	btnText = Color3.fromRGB(20,  30,  48),
 	warn    = Color3.fromRGB(222, 174, 78),
@@ -242,7 +265,7 @@ local C = {
 	paper   = Color3.fromRGB(16,  22,  36),
 	ink     = Color3.fromRGB(248, 250, 252),
 }
-local PANEL_TRANS = 0.18   -- how see-through glass panels are
+local PANEL_TRANS = 0.05   -- was 0.18 — more opaque so bright backgrounds don't bleed through
 local GLASS_R     = 10     -- corner radius for main panels/buttons
 
 local function mkC(p,r) local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,r or 6);c.Parent=p;return c end
@@ -281,8 +304,10 @@ end
 local function mkBtn(parent, txt, bg, fg, size, pos)
 	local b = Instance.new("TextButton")
 	b.Size = size; b.Position = pos
-	b.BackgroundColor3 = bg or C.btn; b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextSize = 12
-	b.TextColor3 = fg or C.btnText; b.AutoButtonColor = true; b.ZIndex = 27; b.Parent = parent
+	b.BackgroundColor3 = bg or C.btn; b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextSize = 13
+	-- Default to white text so dark-background buttons (blue, green, amber) are readable.
+	-- Callers that use a light background (cream choice buttons) pass an explicit dark fg.
+	b.TextColor3 = fg or C.text; b.AutoButtonColor = true; b.ZIndex = 27; b.Parent = parent
 	mkC(b, 8)
 	b.MouseButton1Click:Connect(function() playSfx("click", 0.4) end)
 	return b
@@ -631,14 +656,17 @@ local function getCP(name)
 	-- 1. Search PilotWorld/CameraPoints (original location)
 	local pw=workspace:FindFirstChild("PilotWorld"); local cps=pw and pw:FindFirstChild("CameraPoints")
 	local cp=cps and cps:FindFirstChild(name)
-	-- 2. Search inside PlaneModel (CP_Cockpit dragged in there moves with plane)
+	-- 2. Search PilotWorld directly (part placed outside the CameraPoints subfolder)
+	if not cp and pw then cp=pw:FindFirstChild(name,true) end
+	-- 3. Search inside PlaneModel (CP_Cockpit dragged in there moves with plane)
 	if not cp then
 		local pm=workspace:FindFirstChild("PlaneModel")
 		if pm then cp=pm:FindFirstChild(name,true) end
 	end
-	-- 3. Search entire workspace as last resort
+	-- 4. Search entire workspace as last resort
 	if not cp then cp=workspace:FindFirstChild(name,true) end
-	if not cp then return camera.CFrame end
+	-- Return nil when not found so callers can detect and skip the shot
+	if not cp then return nil end
 	return cp.CFrame
 end
 
@@ -686,15 +714,19 @@ end
 local tutOv=Instance.new("Frame"); tutOv.Size=UDim2.new(1,0,1,0); tutOv.BackgroundColor3=Color3.new(0,0,0); tutOv.BackgroundTransparency=0.55; tutOv.Visible=false; tutOv.ZIndex=38; tutOv.Parent=sg
 local tutP=Instance.new("Frame"); tutP.Size=UDim2.new(0,420,0,440); tutP.Position=UDim2.new(0.5,-210,0.5,-220); tutP.ZIndex=39; tutP.Parent=tutOv; mkGlass(tutP, PANEL_TRANS)
 local tutTitleL=mkLbl(tutP,"Career Quest",22,Enum.Font.GothamBold,C.text,Enum.TextXAlignment.Center,41); tutTitleL.Size=UDim2.new(1,-40,0,36); tutTitleL.Position=UDim2.new(0,20,0,28)
-local tutSubL=mkLbl(tutP,"Pilot World  ·  Flight VA-001",12,Enum.Font.GothamMedium,C.textMut,Enum.TextXAlignment.Center,41); tutSubL.Size=UDim2.new(1,-40,0,18); tutSubL.Position=UDim2.new(0,20,0,66)
-local tutTxt=mkLbl(tutP,"",12,Enum.Font.GothamMedium,C.textSec,Enum.TextXAlignment.Left,41); tutTxt.Size=UDim2.new(1,-48,0,200); tutTxt.Position=UDim2.new(0,24,0,100); tutTxt.TextWrapped=true; tutTxt.TextYAlignment=Enum.TextYAlignment.Top; tutTxt.LineHeight=1.15
+local tutSubL=mkLbl(tutP,"Pilot World  ·  Flight VA-001",13,Enum.Font.GothamMedium,C.textMut,Enum.TextXAlignment.Center,41); tutSubL.Size=UDim2.new(1,-40,0,18); tutSubL.Position=UDim2.new(0,20,0,66)
+local tutTxt=mkLbl(tutP,"",13,Enum.Font.GothamMedium,C.textSec,Enum.TextXAlignment.Left,41); tutTxt.Size=UDim2.new(1,-48,0,200); tutTxt.Position=UDim2.new(0,24,0,100); tutTxt.TextWrapped=true; tutTxt.TextYAlignment=Enum.TextYAlignment.Top; tutTxt.LineHeight=1.15
 tutTxt.Text="Welcome aboard, Captain.\n\nYou'll work through four stations — pre-flight, startup, in-flight, and landing — using the cockpit instruments directly.\n\nW / S throttle the engines. Click to interact. Press E to confirm."
 local tutBtn=mkMenuBtn(tutP, "BEGIN FLIGHT", UDim2.new(0,280,0,48), UDim2.new(0.5,-140,1,-88), 41)
-local tutHintL=mkLbl(tutP,"Press E to start",11,Enum.Font.GothamMedium,C.textMut,Enum.TextXAlignment.Center,41); tutHintL.Size=UDim2.new(1,-40,0,16); tutHintL.Position=UDim2.new(0,20,1,-28)
+local tutHintL=mkLbl(tutP,"Press E to start",12,Enum.Font.GothamMedium,C.textMut,Enum.TextXAlignment.Center,41); tutHintL.Size=UDim2.new(1,-40,0,16); tutHintL.Position=UDim2.new(0,20,1,-28)
 local btnPulse=TweenService:Create(tutBtn,TweenInfo.new(1.1,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut,-1,true),{BackgroundColor3=Color3.fromRGB(240,244,248)})
 -- tutWaiting/gameFlowStarted/taskFlowActive live on M
 
 local function showTutorialUI()
+	-- Switch to Scriptable so Roblox's built-in first-person camera module
+	-- can no longer re-lock the cursor while the tutorial overlay is open.
+	camera.CameraType = Enum.CameraType.Scriptable
+	player.CameraMaxZoomDistance = 128
 	showMouse()
 	M.tutWaiting=true
 	tutP.Position=UDim2.new(0.5,-210,0.58,-220); tutP.BackgroundTransparency=1
@@ -703,6 +735,7 @@ local function showTutorialUI()
 	TweenService:Create(tutOv,TweenInfo.new(0.4),{BackgroundTransparency=0.55}):Play()
 	TweenService:Create(tutP,TweenInfo.new(0.5,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-210,0.5,-220),BackgroundTransparency=PANEL_TRANS}):Play()
 	task.delay(0.35,function() btnPulse:Play() end)
+	pcall(hideLocalCharacter)
 end
 
 --------------------------------------------------------------
@@ -774,7 +807,7 @@ local function enterGameplayCockpit()
 	blackF.BackgroundTransparency=1
 	lbOut(0.01)
 	vigOut()
-	local cockpitCF=getCP("CP_Cockpit")
+	local cockpitCF=getCP("CP_Cockpit") or camera.CFrame
 	releaseCam()
 	camera.CFrame=cockpitCF
 	setupPlaneTracking()
@@ -902,6 +935,8 @@ M.tutTxt = tutTxt
 M.tutBtn = tutBtn
 M.tutHintL = tutHintL
 M.btnPulse = btnPulse
+M.hideLocalCharacter = hideLocalCharacter
+M.showLocalCharacter = showLocalCharacter
 M.lockPlayer = lockPlayer
 M.lockFP = lockFP
 M.showMouse = showMouse

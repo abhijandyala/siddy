@@ -14,39 +14,77 @@ end
 local function playIntroCinematic()
 	local ok, err = pcall(function()
 		if M.aborted then return end
+		-- Hide the avatar for all exterior + cockpit-entry shots.
+		-- showLocalCharacter was called in StartCinematic to reset any hidden state,
+		-- but the player shouldn't be visible during the cinematic camera sequence.
+		pcall(M.hideLocalCharacter)
 		M.takeCam(); M.lbIn(0.32); M.vigIn(0.08)
 		M.setGrade(Color3.fromRGB(210,225,255),0.04,0.08,0.3)
-		M.fadeFromBlack(0.9)
 
-		M.camera.CFrame=M.getCP("CP_Tarmac"); task.wait(0.18)
-		M.showLocCard("JOHN F. KENNEDY INTERNATIONAL","New York, USA  -  Gate 14",1.8); task.wait(2.2)
+		-- Probe whether the camera-point parts exist in this Studio place.
+		-- getCP returns nil when a named part cannot be found anywhere in the workspace.
+		-- With Roblox content streaming the parts may arrive a moment after the cinematic
+		-- starts (the teleport that happened just before is what triggers the stream).
+		-- Retry for up to ~4 seconds so the full cinematic fires once they load in.
+		local cpTarmac
+		do
+			local waited = 0
+			repeat
+				cpTarmac = M.getCP("CP_Tarmac")
+				if not cpTarmac then task.wait(0.25); waited = waited + 0.25 end
+			until cpTarmac or waited >= 4 or M.aborted
+		end
+		local cpTerminal = M.getCP("CP_Terminal")
+		local cpRunway   = M.getCP("CP_Runway")
+		local cpExterior = M.getCP("CP_PlaneExterior")
+		local cpCockpit  = M.getCP("CP_Cockpit")
 
-		M.gtaCut(); M.setGrade(Color3.fromRGB(226,234,248),0.01,0.02,0.18)
-		M.camera.CFrame=M.getCP("CP_Terminal")
-		M.showLocCard("TERMINAL 4  -  DEPARTURE LEVEL","VOCA Airlines  -  Boarding now",1.0); task.wait(1.3)
+		if cpTarmac then
+			-- Full GTA-style 4-shot airport cinematic (camera points exist in Studio)
+			M.fadeFromBlack(0.9)
 
-		M.gtaCut(); M.setGrade(Color3.fromRGB(215,230,255),0.05,0.10,0.18)
-		M.camera.CFrame=M.getCP("CP_Runway")
-		M.showLocCard("RUNWAY 31L","Cleared for departure  -  Wind 270 / 12kts",1.0); task.wait(1.3)
+			M.camera.CFrame = cpTarmac; task.wait(0.18)
+			M.showLocCard("JOHN F. KENNEDY INTERNATIONAL","New York, USA  -  Gate 14",1.8); task.wait(2.2)
 
-		M.gtaCut(); M.setGrade(Color3.fromRGB(205,218,255),0.03,0.06,0.18)
-		M.camera.CFrame=M.getCP("CP_PlaneExterior")
-		M.showLocCard("BOEING 787  -  FLIGHT VA-001","All pre-flight checks complete",1.2); task.wait(1.6)
+			M.gtaCut(); M.setGrade(Color3.fromRGB(226,234,248),0.01,0.02,0.18)
+			if cpTerminal then M.camera.CFrame = cpTerminal end
+			M.showLocCard("TERMINAL 4  -  DEPARTURE LEVEL","VOCA Airlines  -  Boarding now",1.0); task.wait(1.3)
+
+			M.gtaCut(); M.setGrade(Color3.fromRGB(215,230,255),0.05,0.10,0.18)
+			if cpRunway then M.camera.CFrame = cpRunway end
+			M.showLocCard("RUNWAY 31L","Cleared for departure  -  Wind 270 / 12kts",1.0); task.wait(1.3)
+
+			M.gtaCut(); M.setGrade(Color3.fromRGB(205,218,255),0.03,0.06,0.18)
+			if cpExterior then M.camera.CFrame = cpExterior end
+			M.showLocCard("BOEING 787  -  FLIGHT VA-001","All pre-flight checks complete",1.2); task.wait(1.6)
+		else
+			-- Camera points not yet placed in Studio — show a boarding title card instead
+			-- so the game still flows cleanly without the broken 4-identical-shot glitch.
+			-- To restore the full cinematic: add BasePart markers named CP_Tarmac,
+			-- CP_Terminal, CP_Runway, CP_PlaneExterior, CP_Cockpit inside
+			-- workspace > PilotWorld > CameraPoints (or directly inside PilotWorld).
+			warn("[PilotUI] Camera point parts not found (CP_Tarmac etc.) — skipping exterior cinematic. Add them to PilotWorld/CameraPoints in Studio for the full 4-shot sequence.")
+			M.fadeFromBlack(0.6)
+			M.showLocCard("VOCA Airlines  —  Flight VA-001","Welcome aboard, Captain. Preparing for departure.",2.2)
+			task.wait(2.5)
+		end
 		if M.aborted then return end
 
+		-- Cockpit entry sequence (same whether or not exterior shots played)
 		local char=M.player.Character; local hrp=char and char:FindFirstChild("HumanoidRootPart")
 		local seatPart=M.getPWPart("PilotSeat"); local hum=char and char:FindFirstChildOfClass("Humanoid")
 		if hrp and seatPart then hrp.CFrame=CFrame.new(seatPart.Position+Vector3.new(0,3,0)) end
 		if hum then hum.WalkSpeed=0;hum.JumpPower=0;hum.Sit=true end
 		M.showSub("Entering the cockpit...")
 		M.setGrade(Color3.fromRGB(195,212,255),0.02,0.04,0.5)
-		M.camera.CFrame=M.getCP("CP_Cockpit"); task.wait(0.6)
+		if cpCockpit then M.camera.CFrame = cpCockpit end
+		task.wait(0.6)
 		M.hideSub(); task.wait(0.3)
 
 		M.fadeToBlack(0.65)
 		if M.aborted then return end
 		local char2=M.player.Character; local hrp2=char2 and char2:FindFirstChild("HumanoidRootPart")
-		local cockpitCF=M.getCP("CP_Cockpit")
+		local cockpitCF = cpCockpit or M.camera.CFrame
 		if hrp2 then hrp2.CFrame=cockpitCF*CFrame.new(0,-1.5,0) end
 		M.setGrade(Color3.fromRGB(224,236,255),0.02,0.0,0.5)
 		M.TweenService:Create(M.bloom,TweenInfo.new(0.5),{Intensity=0.12,Threshold=1.15}):Play()
@@ -152,7 +190,7 @@ local function runPreFlight(scen)
 	local panel=makePanel(400,480,M.C.panel,22)
 	M.mkGlass(panel, M.PANEL_TRANS)
 
-	local phdrL=M.mkLbl(panel,"Pre-Flight Checklist",16,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Center,24); phdrL.Size=UDim2.new(1,-24,0,28); phdrL.Position=UDim2.new(0,12,0,14)
+	local phdrL=M.mkLbl(panel,"Pre-Flight Checklist",18,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Center,24); phdrL.Size=UDim2.new(1,-24,0,28); phdrL.Position=UDim2.new(0,12,0,14)
 
 	local pbody=Instance.new("ScrollingFrame"); pbody.Size=UDim2.new(1,-24,1,-52); pbody.Position=UDim2.new(0,12,0,48)
 	pbody.BackgroundTransparency=1; pbody.BorderSizePixel=0; pbody.ZIndex=23; pbody.ScrollBarThickness=4
@@ -194,14 +232,16 @@ local function runPreFlight(scen)
 	local itemRows={}
 	for i,it in ipairs(items) do
 		local row=Instance.new("Frame"); row.Size=UDim2.new(1,-4,0,62); row.BackgroundColor3=M.C.bg
-		row.BackgroundTransparency=0.4; row.LayoutOrder=i; row.ZIndex=24; row.ClipsDescendants=true; row.Parent=pbody; M.mkC(row,8)
+		row.BackgroundTransparency=0.1; row.LayoutOrder=i; row.ZIndex=24; row.ClipsDescendants=true; row.Parent=pbody; M.mkC(row,8)
 
 		local chkBox=Instance.new("Frame"); chkBox.Size=UDim2.new(0,40,0,42); chkBox.Position=UDim2.new(0,8,0,10)
-		chkBox.BackgroundColor3=M.C.border; chkBox.BackgroundTransparency=0.3; chkBox.ZIndex=25; chkBox.Parent=row; M.mkC(chkBox,8)
+		chkBox.BackgroundColor3=M.C.border; chkBox.BackgroundTransparency=0; chkBox.ZIndex=25; chkBox.Parent=row; M.mkC(chkBox,8)
 		local chkLbl=M.mkLbl(chkBox,"",16,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Center,26); chkLbl.Size=UDim2.new(1,0,1,0)
 
-		local lblName=M.mkLbl(row,it.label,11,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Left,25); lblName.Size=UDim2.new(1,-62,0,22); lblName.Position=UDim2.new(0,56,0,8)
-		local lblDet=M.mkLbl(row,it.detail,9,Enum.Font.GothamMedium,M.C.textMut,Enum.TextXAlignment.Left,25); lblDet.Size=UDim2.new(1,-62,0,16); lblDet.Position=UDim2.new(0,56,0,32)
+		local lblName=M.mkLbl(row,it.label,13,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Left,25); lblName.Size=UDim2.new(1,-62,0,22); lblName.Position=UDim2.new(0,56,0,8)
+		lblName.TextStrokeColor3=Color3.new(0,0,0); lblName.TextStrokeTransparency=0.4
+		local lblDet=M.mkLbl(row,it.detail,11,Enum.Font.GothamMedium,M.C.textSec,Enum.TextXAlignment.Left,25); lblDet.Size=UDim2.new(1,-62,0,16); lblDet.Position=UDim2.new(0,56,0,32)
+		lblDet.TextStrokeColor3=Color3.new(0,0,0); lblDet.TextStrokeTransparency=0.35
 
 		local expand=Instance.new("Frame"); expand.Size=UDim2.new(1,-24,0,0); expand.Position=UDim2.new(0,12,0,64)
 		expand.BackgroundTransparency=1; expand.ZIndex=26; expand.Visible=false; expand.Parent=row
@@ -292,11 +332,12 @@ local function runPreFlight(scen)
 			return 56
 
 		else -- choice
-			local pr=M.mkLbl(area,it.prompt or "Select:",11,Enum.Font.GothamBold,Color3.fromRGB(70,60,50),Enum.TextXAlignment.Left,27); pr.Size=UDim2.new(1,0,0,18); pr.Position=UDim2.new(0,0,0,0)
+			local pr=M.mkLbl(area,it.prompt or "Select:",12,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Left,27); pr.Size=UDim2.new(1,0,0,18); pr.Position=UDim2.new(0,0,0,0)
 			local y=22
 			for _,opt in ipairs(it.options) do
-				local b=M.mkBtn(area,opt.t,Color3.fromRGB(235,233,222),M.C.ink,UDim2.new(1,0,0,32),UDim2.new(0,0,0,y))
-				M.mkS(b,Color3.fromRGB(200,192,175),1)
+				-- Light cream bg needs dark text (btnText = dark navy) — NOT M.C.ink (near-white)
+				local b=M.mkBtn(area,opt.t,Color3.fromRGB(235,233,222),M.C.btnText,UDim2.new(1,0,0,32),UDim2.new(0,0,0,y))
+				M.mkS(b,Color3.fromRGB(160,152,135),1)
 				b.MouseButton1Click:Connect(function()
 					if ir.done then return end
 					if opt.ok then M.TweenService:Create(b,TweenInfo.new(0.15),{BackgroundColor3=M.C.success}):Play(); finish(0)
@@ -321,6 +362,9 @@ local function runPreFlight(scen)
 		local ir=itemRows[idx]
 		ir.done=true; ir.chkLbl.Text="OK"; ir.chkBox.BackgroundColor3=M.C.success
 		ir.expand.Visible=false
+		-- Light-green done bg — keep text dark so it stays readable
+		ir.name.TextColor3 = M.C.bg
+		ir.det.TextColor3  = Color3.fromRGB(20,60,30)
 		M.TweenService:Create(ir.row,TweenInfo.new(0.22,Enum.EasingStyle.Quad),{Size=UDim2.new(1,-4,0,62),BackgroundColor3=Color3.fromRGB(224,244,228)}):Play()
 		M.flash(M.C.success,0.08,0.16)
 	end
@@ -328,6 +372,9 @@ local function runPreFlight(scen)
 	local function activate(idx)
 		activeIdx=idx
 		local ir=itemRows[idx]; local it=items[idx]
+		-- Light-blue active bg — switch text to dark so it's legible
+		ir.name.TextColor3 = M.C.bg
+		ir.det.TextColor3  = M.C.btnText
 		M.TweenService:Create(ir.row,TweenInfo.new(0.2),{BackgroundColor3=Color3.fromRGB(220,234,255)}):Play()
 		local finished=false
 		local function finish(addPen)
@@ -458,7 +505,7 @@ local function runStartup(scen)
 			obj=fb; parts={fb}
 		end
 
-		-- pick the smallest part as the "lever" we glow/flip and centre the hitbox on,
+		-- pick the smallest part as the "lever" we glow/flip,
 		-- and make every real part raycast-clickable
 		local flipPart, smallest = parts[1], math.huge
 		for _,p in ipairs(parts) do
@@ -477,13 +524,32 @@ local function runStartup(scen)
 		hl.FillColor=sw.col; hl.OutlineColor=Color3.fromRGB(255,255,255)
 		hl.FillTransparency=0.35; hl.OutlineTransparency=0.0; hl.Parent=obj
 
-		-- invisible hitbox centered on the ACTUAL lever (flipPart), not the whole-model
-		-- bounding box. For multi-part switches the model bbox centre sits ABOVE the lever,
-		-- which forced you to aim high (the switch 2 / 6 problem); centering on the lever
-		-- means the crosshair lands exactly on the switch you see glowing.
-		local hbCF, hbSize = flipPart.CFrame, flipPart.Size
+		-- For the HITBOX, use the model's full bounding box so the clickable area
+		-- covers the entire visible button face (not just one small sub-part).
+		-- Position comes from the part closest to the bbox centre so we stay on
+		-- the button face rather than floating in the air above it.
+		local hbCF, hbSize
+		if isModel and #parts > 1 then
+			local bbCF, bbSz = obj:GetBoundingBox()
+			local bbCenter = bbCF.Position
+			local hbPart, closestDist = flipPart, math.huge
+			for _,p in ipairs(parts) do
+				local d = (p.Position - bbCenter).Magnitude
+				if d < closestDist then closestDist = d; hbPart = p end
+			end
+			hbCF   = hbPart.CFrame
+			hbSize = bbSz   -- full model extent → hitbox matches the whole button
+		else
+			hbCF   = flipPart.CFrame
+			hbSize = flipPart.Size
+		end
 		local FLOOR = 1.0
-		hbSize = Vector3.new(math.max(hbSize.X,FLOOR), math.max(hbSize.Y,FLOOR), math.max(hbSize.Z,FLOOR))
+		local PAD   = 1.6   -- scale factor: hitbox is 60% larger than the button geometry
+		hbSize = Vector3.new(
+			math.max(hbSize.X * PAD, FLOOR),
+			math.max(hbSize.Y * PAD, FLOOR),
+			math.max(hbSize.Z * PAD, FLOOR)
+		)
 		local hb = Instance.new("Part")
 		hb.Transparency=1; hb.Anchored=true; hb.CanCollide=false; hb.CanQuery=true; hb.CastShadow=false
 		hb.Size = hbSize

@@ -76,12 +76,22 @@ renderConn = RunService.RenderStepped:Connect(function(dt)
 		camera.FieldOfView = TARGET_FOV
 	end
 
-	-- Arms visible
+	-- Arms visible — but only when the rest of the character is NOT hidden.
+	-- NurseWorldUI.hideCharacter() sets LocalTransparencyModifier = 1 on all
+	-- parts (including arms), and this loop previously overrode arms back to 0
+	-- every frame while the body stayed hidden. We now check HumanoidRootPart:
+	-- if it's hidden the whole character should be invisible, so we skip arms.
 	local character = player.Character
 	if character then
-		for _, part in character:GetChildren() do
-			if part:IsA("BasePart") and showParts[part.Name] then
-				part.LocalTransparencyModifier = 0
+		local root = character:FindFirstChild("HumanoidRootPart")
+			or character:FindFirstChild("UpperTorso")
+			or character:FindFirstChild("Torso")
+		local charHidden = root and root.LocalTransparencyModifier >= 1
+		if not charHidden then
+			for _, part in character:GetChildren() do
+				if part:IsA("BasePart") and showParts[part.Name] then
+					part.LocalTransparencyModifier = 0
+				end
 			end
 		end
 	end

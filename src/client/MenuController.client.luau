@@ -37,10 +37,21 @@ local settingsFrame = menuGui:WaitForChild("SettingsFrame")
 
 print("MenuController: Found all frames")
 
--- Get buttons from MenuFrame
-local playButton = menuFrame:WaitForChild("PlayButton")
-local tutorialButton = menuFrame:WaitForChild("TutorialButton")
-local settingsButton = menuFrame:WaitForChild("SettingsButton")
+local function waitForDescendant(parent, name, timeout)
+	local found = parent:FindFirstChild(name, true)
+	local elapsed = 0
+	while not found and elapsed < (timeout or 10) do
+		elapsed += task.wait(0.05)
+		found = parent:FindFirstChild(name, true)
+	end
+	return found
+end
+
+-- Get buttons from MenuFrame. The title screen uses a bottom button dock, so
+-- these are descendants rather than direct children.
+local playButton = waitForDescendant(menuFrame, "PlayButton")
+local tutorialButton = waitForDescendant(menuFrame, "TutorialButton")
+local settingsButton = waitForDescendant(menuFrame, "SettingsButton")
 
 -- Get back buttons
 local tutorialBackButton = tutorialFrame:WaitForChild("BackButton")
@@ -56,7 +67,7 @@ print("MenuController: Found all buttons")
 local originalButtonPositions = {}
 
 local function storeOriginalPositions(frame)
-	for _, child in pairs(frame:GetChildren()) do
+	for _, child in pairs(frame:GetDescendants()) do
 		if child:IsA("TextButton") then
 			originalButtonPositions[child] = child.Position
 		end
@@ -106,6 +117,11 @@ print("MenuController: Cleaned up all frames - using Studio settings only")
 -- The global blur blurs the background, this gives the frosted glass panel look
 
 local function applyGlassmorphism(frame)
+	if frame == menuFrame then
+		frame.BackgroundTransparency = 1
+		return
+	end
+
 	-- Deep navy blue background for sleek dark theme
 	frame.BackgroundColor3 = Color3.fromRGB(12, 20, 45)
 	frame.BackgroundTransparency = 0.25
@@ -141,7 +157,7 @@ print("MenuController: Glassmorphism applied to all frames")
 
 for _, frame in ipairs({menuFrame, tutorialFrame, settingsFrame}) do
 	for _, child in pairs(frame:GetDescendants()) do
-		if child:IsA("TextLabel") then
+		if child:IsA("TextLabel") and child.Name == "TitleLabel" then
 			child.TextColor3 = Color3.fromRGB(255, 255, 255)
 		end
 	end
@@ -346,7 +362,7 @@ end
 -- Show a frame with fade-in animation and staggered button entrance
 local function showFrameWithFade(frame, duration)
 	-- Start with frame background invisible
-	local originalBgTransparency = 0.25  -- Deep blue glass transparency
+	local originalBgTransparency = if frame == menuFrame then 1 else 0.25
 	frame.BackgroundTransparency = 1
 	
 	-- Collect buttons for staggered animation
@@ -561,10 +577,42 @@ local function hideFrameWithFade(frame, duration)
 	end
 end
 
+-- Simple clean open/close for sub-panels (Settings, Tutorial).
+-- Only touches the panel frame itself — avoids the accumulated-tween glitch
+-- that the deep child-scan causes on repeated open/close cycles.
+local buttonDock = menuFrame:FindFirstChild("ButtonDock", true)
+
+local function openPanel(panel)
+	if buttonDock then buttonDock.Visible = false end
+	panel.BackgroundTransparency = 1
+	panel.Visible = true
+	TweenService:Create(panel, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ BackgroundTransparency = 0.18 }):Play()
+end
+
+local function closePanel(panel)
+	local t = TweenService:Create(panel, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ BackgroundTransparency = 1 })
+	t:Play()
+	t.Completed:Connect(function()
+		panel.Visible = false
+		if buttonDock then buttonDock.Visible = true end
+	end)
+end
+
 -- Switch from one frame to another
 local function switchFrame(fromFrame, toFrame)
-	hideFrameWithFade(fromFrame, FRAME_TRANSITION_DURATION)
-	showFrameWithFade(toFrame, FRAME_TRANSITION_DURATION)
+	if fromFrame == menuFrame then
+		-- Opening a sub-panel: keep menu visible underneath, just open the panel
+		openPanel(toFrame)
+	elseif toFrame == menuFrame then
+		-- Closing back to menu: close the sub-panel, menu is already visible
+		closePanel(fromFrame)
+	else
+		-- Sub-panel to sub-panel
+		closePanel(fromFrame)
+		task.delay(0.2, function() openPanel(toFrame) end)
+	end
 end
 
 -- ============================================
@@ -737,8 +785,6 @@ menuFrame.Visible = true
 
 print("MenuController: Main menu visible immediately")
 
-addFloatingAnimation(menuFrame)
-addBorderPulse(menuFrame)
 addBorderPulse(tutorialFrame)
 addBorderPulse(settingsFrame)
 

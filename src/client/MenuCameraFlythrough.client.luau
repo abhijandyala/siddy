@@ -1,4 +1,7 @@
 -- MenuCameraFlythrough.client.luau
+-- DISABLED: replaced by MenuBackground.client.luau (animated dither wave background)
+do return end
+
 -- Loops through career environment cameras for the menu background
 -- Order: Cyber → Chef → Hospital (3 seconds each, 9 second loop)
 -- Starts immediately on the main menu — no intro cinematic, no black fade.

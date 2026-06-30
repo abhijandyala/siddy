@@ -13,3 +13,7 @@ node_modules/
 # OS / editor
 .DS_Store
 .cursor/
+
+# Large video files (exceed GitHub 100 MB limit)
+fblanatsboundbaby.mp4
+presentation/fblanatsboundbaby.mp4

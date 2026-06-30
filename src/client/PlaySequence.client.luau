@@ -103,17 +103,26 @@ end
 
 print("PlaySequence: Game started! Beginning tutorial sequence...")
 
+local UserInputService = game:GetService("UserInputService")
+
 -- RESET CAMERA SETTINGS to prevent interference from other scripts
 -- This ensures the cybersecurity section camera works correctly
 player.CameraMinZoomDistance = 0.5
 player.CameraMaxZoomDistance = 128
 camera.FieldOfView = 70 -- Default FOV
+-- Switch to Scriptable so Roblox's built-in first-person camera module cannot
+-- re-lock the cursor during the tutorial slides. MenuBackground.cleanup() sets
+-- CameraType = Custom when the game starts, which (if StarterPlayer or a prior
+-- world left the zoom at 0.5) puts the player in first-person and locks the
+-- cursor invisibly behind the overlay. Scriptable disables that entirely.
+camera.CameraType = Enum.CameraType.Scriptable
+UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+UserInputService.MouseIconEnabled = true
 print("PlaySequence: Camera settings reset for cybersecurity section")
 
 -- ============================================
 -- SKIP BUTTON (bottom left, changes color per world)
 -- ============================================
-local UserInputService = game:GetService("UserInputService")
 
 -- World colors
 local WORLD_COLORS = {
@@ -296,6 +305,16 @@ local function cleanupChefWorld(fadeMusic)
 			print("PlaySequence: Destroyed " .. child.Name)
 		end
 	end
+
+	-- Ensure camera is restored to classic third-person after ChefWorld ends.
+	-- ChefWorldUI locks first-person during gameplay; we override it here so
+	-- subsequent worlds and screens always start in the correct camera mode.
+	player.CameraMode = Enum.CameraMode.Classic
+	player.CameraMinZoomDistance = 0.5
+	player.CameraMaxZoomDistance = 128
+	pcall(function()
+		workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+	end)
 end
 
 -- ============================================
@@ -537,8 +556,37 @@ local function teleportPlayerToWorld(worldKey)
 		warn("PlaySequence: No spawn marker in " .. folder:GetFullName() .. " — using world origin (add a WorldSpawn part)")
 	end
 
+	-- Aviation-specific fallback: try the PlaneModel when PilotWorld has no BaseParts.
+	-- PlaneModel is a separate top-level Model in the workspace and typically has geometry.
+	if not cf and worldKey == "Aviation" then
+		local planeModel = workspace:FindFirstChild("PlaneModel")
+		if planeModel and planeModel:IsA("Model") then
+			cf = planeModel:GetPivot() + Vector3.new(0, 5, 0)
+			print("PlaySequence: Aviation teleport — using PlaneModel pivot as fallback spawn")
+		elseif planeModel then
+			local planePart = planeModel:FindFirstChildWhichIsA("BasePart", true)
+			if planePart then
+				cf = planePart.CFrame + Vector3.new(0, 5, 0)
+				print("PlaySequence: Aviation teleport — using PlaneModel part as fallback spawn")
+			end
+		end
+		-- Last resort: any part with a cockpit/seat/tarmac name anywhere in workspace
+		if not cf then
+			for _, fallbackName in ipairs({"CP_Tarmac", "CP_Cockpit", "PilotSeat", "PilotSpawn"}) do
+				local part = workspace:FindFirstChild(fallbackName, true)
+				if part and (part:IsA("BasePart") or part:IsA("Model") or part:IsA("Attachment")) then
+					cf = spawnObjectToCFrame(part)
+					if cf then
+						print("PlaySequence: Aviation teleport — using '" .. fallbackName .. "' as fallback spawn")
+						break
+					end
+				end
+			end
+		end
+	end
+
 	if not cf then
-		warn("PlaySequence: Could not resolve teleport for " .. worldKey)
+		warn("PlaySequence: Could not resolve teleport for " .. worldKey .. " — player will stay at current position")
 		return false
 	end
 
@@ -643,6 +691,15 @@ end)
 -- and MenuCameraFlythrough has time to clean up effects
 task.wait(0.3)
 
+-- MenuBackground.client.luau's RenderStepped cleanup fires on the frame after
+-- GameState.Started, which sets CameraType back to Custom. We re-assert here
+-- (after the wait above has given it time to fire) so the tutorial screen does
+-- not inadvertently lock the cursor into first-person.
+camera.CameraType = Enum.CameraType.Scriptable
+UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+UserInputService.MouseIconEnabled = true
+player.CameraMaxZoomDistance = 128
+
 -- ============================================
 -- INSTRUCTIONS (tutorial slides)
 -- ============================================
@@ -657,7 +714,7 @@ if not transitionGui then
 	transitionGui.IgnoreGuiInset = true
 	transitionGui.DisplayOrder = 500
 	transitionGui.Parent = playerGui
-	
+
 	local fallbackBlack = Instance.new("Frame")
 	fallbackBlack.Name = "BlackFrame"
 	fallbackBlack.Size = UDim2.new(1, 0, 1, 0)
@@ -674,203 +731,300 @@ tutorialGui.IgnoreGuiInset = true
 tutorialGui.DisplayOrder = 600
 tutorialGui.Parent = playerGui
 
--- Dark navy blue background for the tutorial
+-- ── PALETTE  (matches MenuGuiCreator exactly) ─────────────────────
+local TC = {
+	bg       = Color3.fromRGB(6,  9,  20),
+	panel    = Color3.fromRGB(8,  12, 24),
+	panelSft = Color3.fromRGB(14, 20, 36),
+	stroke   = Color3.fromRGB(145, 178, 220),
+	ink      = Color3.fromRGB(245, 248, 255),
+	muted    = Color3.fromRGB(184, 196, 218),
+	aviation = Color3.fromRGB(108, 195, 255),
+	chef     = Color3.fromRGB(255, 224, 139),
+	nurse    = Color3.fromRGB(174, 255, 178),
+	cyber    = Color3.fromRGB(236, 168, 255),
+	button   = Color3.fromRGB(238, 242, 248),
+	btnText  = Color3.fromRGB(16,  24, 38),
+}
+-- Each slide gets its own career accent colour
+local SLIDE_ACCENTS = { TC.aviation, TC.chef, TC.nurse }
+
+local function tcCorner(p, r)
+	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 16); c.Parent = p; return c
+end
+local function tcStroke(p, col, thick, alpha)
+	local s = Instance.new("UIStroke")
+	s.Color = col or TC.stroke; s.Thickness = thick or 1.5; s.Transparency = alpha or 0.42
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.LineJoinMode    = Enum.LineJoinMode.Bevel
+	s.Parent = p; return s
+end
+
+-- Full-screen deep-navy background with a subtle diagonal gradient
 local tutorialBg = Instance.new("Frame")
 tutorialBg.Name = "Background"
 tutorialBg.Size = UDim2.new(1, 0, 1, 0)
-tutorialBg.BackgroundColor3 = Color3.fromRGB(5, 10, 25)
+tutorialBg.BackgroundColor3 = TC.bg
 tutorialBg.BackgroundTransparency = 0
 tutorialBg.BorderSizePixel = 0
 tutorialBg.Parent = tutorialGui
 
--- ============================================
--- BUILD TUTORIAL SLIDE CARDS (code-generated UI)
--- ============================================
+local bgGrad = Instance.new("UIGradient")
+bgGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(10, 16, 34)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(4,  6,  14)),
+})
+bgGrad.Rotation = 135
+bgGrad.Parent = tutorialBg
 
-local CARD_COLOR = Color3.fromRGB(12, 20, 45)  -- Match menu panel color
-local TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+-- ── VOCA WORDMARK + CAREER ACCENT BAR (top of screen) ────────────
+local headerFrame = Instance.new("Frame")
+headerFrame.Name = "Header"
+headerFrame.Size = UDim2.new(1, 0, 0, 86)
+headerFrame.BackgroundTransparency = 1
+headerFrame.BorderSizePixel = 0
+headerFrame.Parent = tutorialBg
 
+local vocaLabel = Instance.new("TextLabel")
+vocaLabel.Size = UDim2.new(1, 0, 0, 58)
+vocaLabel.Position = UDim2.new(0, 0, 0, 12)
+vocaLabel.BackgroundTransparency = 1
+vocaLabel.RichText = true
+vocaLabel.Text = 'V<font color="rgb(190,160,220)">O</font>CA'
+vocaLabel.TextColor3 = TC.ink
+vocaLabel.TextSize = 46
+vocaLabel.Font = Enum.Font.GothamBlack
+vocaLabel.TextXAlignment = Enum.TextXAlignment.Center
+vocaLabel.Parent = headerFrame
+
+local vocaGlow = Instance.new("UIStroke")
+vocaGlow.Color = Color3.fromRGB(180, 218, 255)
+vocaGlow.Thickness = 1.2
+vocaGlow.Transparency = 0.55
+vocaGlow.LineJoinMode = Enum.LineJoinMode.Bevel
+vocaGlow.Parent = vocaLabel
+
+-- Four career-color pills (aviation / chef / nurse / cyber)
+local accentRowFrame = Instance.new("Frame")
+accentRowFrame.Name = "AccentRow"
+accentRowFrame.Size = UDim2.new(0, 208, 0, 4)
+accentRowFrame.Position = UDim2.new(0.5, -104, 0, 72)
+accentRowFrame.BackgroundTransparency = 1
+accentRowFrame.BorderSizePixel = 0
+accentRowFrame.Parent = headerFrame
+
+local accentLayout = Instance.new("UIListLayout")
+accentLayout.FillDirection = Enum.FillDirection.Horizontal
+accentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+accentLayout.Padding = UDim.new(0, 8)
+accentLayout.Parent = accentRowFrame
+
+for _, col in ipairs({ TC.aviation, TC.chef, TC.nurse, TC.cyber }) do
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(0, 40, 0, 4)
+	bar.BackgroundColor3 = col
+	bar.BorderSizePixel = 0
+	bar.Parent = accentRowFrame
+	tcCorner(bar, 999)
+end
+
+-- ── BUILD SLIDE CARDS ─────────────────────────────────────────────
 local slideCards = {}
 
 for i, data in ipairs(TUTORIAL_SLIDES) do
-	-- Card container (dark navy rounded rectangle, centered)
+	local accent = SLIDE_ACCENTS[i] or TC.aviation
+
+	-- Glass panel (matches MenuGuiCreator panel style exactly)
 	local card = Instance.new("Frame")
 	card.Name = "SlideCard_" .. i
 	card.AnchorPoint = Vector2.new(0.5, 0.5)
-	card.Size = UDim2.new(0.55, 0, 0.5, 0)
-	card.Position = UDim2.new(0.5, 0, 0.45, 0)
-	card.BackgroundColor3 = CARD_COLOR
+	card.Size = UDim2.new(0.56, 0, 0.50, 0)
+	card.Position = UDim2.new(0.5, 0, 0.53, 0)
+	card.BackgroundColor3 = TC.panel
 	card.BackgroundTransparency = 1
 	card.BorderSizePixel = 0
 	card.Visible = false
 	card.Parent = tutorialBg
+	tcCorner(card, 22)
 
-	local cardCorner = Instance.new("UICorner")
-	cardCorner.CornerRadius = UDim.new(0, 28)
-	cardCorner.Parent = card
-
-	local cardStroke = Instance.new("UIStroke")
+	local cardStroke = tcStroke(card, accent, 1.5, 1)  -- starts invisible
 	cardStroke.Name = "CardStroke"
-	cardStroke.Color = Color3.fromRGB(60, 140, 255)  -- Electric blue
-	cardStroke.Transparency = 1  -- Starts invisible, fades in with card
-	cardStroke.Thickness = 2
-	cardStroke.Parent = card
 
-	local cardPadding = Instance.new("UIPadding")
-	cardPadding.PaddingTop = UDim.new(0, 28)
-	cardPadding.PaddingBottom = UDim.new(0, 28)
-	cardPadding.PaddingLeft = UDim.new(0, 36)
-	cardPadding.PaddingRight = UDim.new(0, 36)
-	cardPadding.Parent = card
+	-- Subtle inner gradient (glass depth)
+	local cardGrad = Instance.new("UIGradient")
+	cardGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(16, 22, 44)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(8,  12, 24)),
+	})
+	cardGrad.Rotation = 135
+	cardGrad.Parent = card
 
-	-- Title label
+	local cardPad = Instance.new("UIPadding")
+	cardPad.PaddingTop    = UDim.new(0, 32)
+	cardPad.PaddingBottom = UDim.new(0, 28)
+	cardPad.PaddingLeft   = UDim.new(0, 36)
+	cardPad.PaddingRight  = UDim.new(0, 36)
+	cardPad.Parent = card
+
+	-- Title — accent-tinted so each slide has its own colour identity
 	local title = Instance.new("TextLabel")
 	title.Name = "Title"
 	title.Size = UDim2.new(1, 0, 0, 40)
 	title.Position = UDim2.new(0, 0, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Text = data.title
-	title.TextColor3 = TEXT_COLOR
-	title.TextSize = 32
-	title.Font = Enum.Font.Code
-	title.TextXAlignment = Enum.TextXAlignment.Center
+	title.TextColor3 = accent          -- accent colour per slide instead of plain white
+	title.TextSize = 24
+	title.Font = Enum.Font.GothamBlack
+	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.TextYAlignment = Enum.TextYAlignment.Center
 	title.TextTransparency = 1
 	title.TextWrapped = true
+	title.ZIndex = 2
 	title.Parent = card
 
-	-- Body label
+	-- Thin divider line below the title
+	local divider = Instance.new("Frame")
+	divider.Name = "Divider"
+	divider.Size = UDim2.new(1, 0, 0, 1)
+	divider.Position = UDim2.new(0, 0, 0, 44)
+	divider.BackgroundColor3 = accent
+	divider.BackgroundTransparency = 1
+	divider.BorderSizePixel = 0
+	divider.ZIndex = 2
+	divider.Parent = card
+
+	-- Body text (GothamMedium, muted — near-white for readability)
 	local body = Instance.new("TextLabel")
 	body.Name = "Body"
-	body.Size = UDim2.new(1, 0, 1, -60)
-	body.Position = UDim2.new(0, 0, 0, 60)
+	body.Size = UDim2.new(1, 0, 1, -54)
+	body.Position = UDim2.new(0, 0, 0, 54)
 	body.BackgroundTransparency = 1
 	body.Text = data.body
-	body.TextColor3 = TEXT_COLOR
-	body.TextSize = 22
-	body.Font = Enum.Font.Code
+	body.TextColor3 = TC.muted
+	body.TextSize = 19
+	body.Font = Enum.Font.GothamMedium
 	body.TextXAlignment = Enum.TextXAlignment.Left
 	body.TextYAlignment = Enum.TextYAlignment.Top
 	body.TextTransparency = 1
 	body.TextWrapped = true
-	body.LineHeight = 1.4
+	body.LineHeight = 1.55
+	body.ZIndex = 2
 	body.Parent = card
 
-	slideCards[i] = { card = card, title = title, body = body, stroke = cardStroke }
+	slideCards[i] = {
+		card = card, title = title, body = body, stroke = cardStroke,
+		divider = divider,
+	}
 end
 
 print("PlaySequence: Built " .. #slideCards .. " tutorial slide cards")
 
--- Slide counter text ("1 / 3")
+-- ── SLIDE COUNTER (pill badge) ────────────────────────────────────
+local counterPill = Instance.new("Frame")
+counterPill.Name = "SlideCounterPill"
+counterPill.AnchorPoint = Vector2.new(0.5, 0)
+counterPill.Size = UDim2.new(0, 72, 0, 26)
+counterPill.Position = UDim2.new(0.5, 0, 0.88, 0)
+counterPill.BackgroundColor3 = TC.panelSft
+counterPill.BackgroundTransparency = 0.35
+counterPill.BorderSizePixel = 0
+counterPill.Parent = tutorialBg
+tcCorner(counterPill, 999)
+tcStroke(counterPill, TC.stroke, 1, 0.62)
+
 local slideCounter = Instance.new("TextLabel")
 slideCounter.Name = "SlideCounter"
-slideCounter.AnchorPoint = Vector2.new(0.5, 0)
-slideCounter.Size = UDim2.new(0, 80, 0, 28)
-slideCounter.Position = UDim2.new(0.5, 0, 0.88, 0)
+slideCounter.Size = UDim2.new(1, 0, 1, 0)
 slideCounter.BackgroundTransparency = 1
-slideCounter.TextColor3 = Color3.fromRGB(100, 160, 220)  -- Light blue
-slideCounter.TextSize = 16
+slideCounter.TextColor3 = TC.muted
+slideCounter.TextSize = 13
 slideCounter.Font = Enum.Font.GothamMedium
 slideCounter.Text = ""
 slideCounter.TextTransparency = 1
-slideCounter.Parent = tutorialBg
+slideCounter.TextXAlignment = Enum.TextXAlignment.Center
+slideCounter.Parent = counterPill
 
--- Progress bar background
+-- ── PROGRESS BAR ─────────────────────────────────────────────────
 local progressBg = Instance.new("Frame")
 progressBg.Name = "ProgressBarBg"
 progressBg.AnchorPoint = Vector2.new(0.5, 0)
-progressBg.Size = UDim2.new(0.5, 0, 0, 4)
+progressBg.Size = UDim2.new(0.42, 0, 0, 5)
 progressBg.Position = UDim2.new(0.5, 0, 0.93, 0)
-progressBg.BackgroundColor3 = Color3.fromRGB(20, 30, 60)  -- Dark blue track
+progressBg.BackgroundColor3 = Color3.fromRGB(16, 22, 44)
 progressBg.BorderSizePixel = 0
 progressBg.Parent = tutorialBg
+tcCorner(progressBg, 999)
 
-local progressCornerBg = Instance.new("UICorner")
-progressCornerBg.CornerRadius = UDim.new(0, 2)
-progressCornerBg.Parent = progressBg
-
--- Progress bar fill
 local progressFill = Instance.new("Frame")
 progressFill.Name = "Fill"
 progressFill.Size = UDim2.new(0, 0, 1, 0)
-progressFill.BackgroundColor3 = Color3.fromRGB(60, 140, 255)  -- Electric blue fill
+progressFill.BackgroundColor3 = TC.aviation
 progressFill.BackgroundTransparency = 0
 progressFill.BorderSizePixel = 0
 progressFill.Parent = progressBg
+tcCorner(progressFill, 999)
 
-local progressCornerFill = Instance.new("UICorner")
-progressCornerFill.CornerRadius = UDim.new(0, 2)
-progressCornerFill.Parent = progressFill
+-- Gradient shimmer on the fill
+local fillGrad = Instance.new("UIGradient")
+fillGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, TC.aviation),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(185, 225, 255)),
+})
+fillGrad.Parent = progressFill
 
--- ============================================
--- SKIP BUTTON (bottom right, clean minimal style)
--- ============================================
-
+-- ── SKIP BUTTON (menu button style) ──────────────────────────────
 local tutorialSkipped = false
 
 local skipButton = Instance.new("TextButton")
 skipButton.Name = "SkipButton"
 skipButton.AnchorPoint = Vector2.new(1, 1)
-skipButton.Size = UDim2.new(0, 100, 0, 36)
-skipButton.Position = UDim2.new(0.95, 0, 0.95, 0)
-skipButton.BackgroundColor3 = Color3.fromRGB(20, 40, 80)  -- Dark blue
+skipButton.Size = UDim2.new(0, 110, 0, 42)
+skipButton.Position = UDim2.new(0.97, 0, 0.96, 0)
+skipButton.BackgroundColor3 = TC.button
 skipButton.BackgroundTransparency = 1
 skipButton.BorderSizePixel = 0
 skipButton.Text = "SKIP"
-skipButton.TextColor3 = Color3.fromRGB(150, 200, 255)  -- Light blue text
-skipButton.TextSize = 14
-skipButton.Font = Enum.Font.GothamMedium
+skipButton.TextColor3 = TC.btnText
+skipButton.TextSize = 15
+skipButton.Font = Enum.Font.GothamBold
 skipButton.TextTransparency = 1
-skipButton.AutoButtonColor = false  -- We handle hover ourselves
+skipButton.AutoButtonColor = false
 skipButton.Parent = tutorialBg
+tcCorner(skipButton, 12)
 
-local skipCorner = Instance.new("UICorner")
-skipCorner.CornerRadius = UDim.new(0, 8)
-skipCorner.Parent = skipButton
+-- White-to-light gradient (matches menu buttons)
+local skipBtnGrad = Instance.new("UIGradient")
+skipBtnGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(212, 220, 232)),
+})
+skipBtnGrad.Rotation = 90
+skipBtnGrad.Parent = skipButton
 
-local skipStroke = Instance.new("UIStroke")
-skipStroke.Color = Color3.fromRGB(60, 140, 255)  -- Electric blue border
-skipStroke.Transparency = 1
-skipStroke.Thickness = 1.5
-skipStroke.Parent = skipButton
+local skipStroke = tcStroke(skipButton, TC.aviation, 1.4, 1)
 
--- Skip button hover animations
 skipButton.MouseEnter:Connect(function()
 	if tutorialSkipped then return end
-	TweenService:Create(skipButton,
-		TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{BackgroundColor3 = Color3.fromRGB(40, 80, 160), BackgroundTransparency = 0.3}
-	):Play()
-	TweenService:Create(skipStroke,
-		TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{Transparency = 0.2}
-	):Play()
+	TweenService:Create(skipButton, TweenInfo.new(0.15), {BackgroundTransparency = 0}):Play()
+	TweenService:Create(skipStroke,  TweenInfo.new(0.15), {Transparency = 0.18}):Play()
 end)
-
 skipButton.MouseLeave:Connect(function()
 	if tutorialSkipped then return end
-	TweenService:Create(skipButton,
-		TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{BackgroundColor3 = Color3.fromRGB(20, 40, 80), BackgroundTransparency = 0.7}
-	):Play()
-	TweenService:Create(skipStroke,
-		TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{Transparency = 0.5}
-	):Play()
+	TweenService:Create(skipButton, TweenInfo.new(0.15), {BackgroundTransparency = 0.06}):Play()
+	TweenService:Create(skipStroke,  TweenInfo.new(0.15), {Transparency = 0.42}):Play()
 end)
 
--- Fade skip button in smoothly over 1 second
+-- Fade the skip button in smoothly after 1 second
 task.spawn(function()
 	task.wait(1.0)
 	if tutorialSkipped then return end
 	TweenService:Create(skipButton,
-		TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{TextTransparency = 0, BackgroundTransparency = 0.7}
-	):Play()
+		TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{TextTransparency = 0, BackgroundTransparency = 0.06}):Play()
 	TweenService:Create(skipStroke,
-		TweenInfo.new(1.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{Transparency = 0.5}
-	):Play()
+		TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{Transparency = 0.42}):Play()
 end)
 
 -- Skip button click handler
@@ -878,16 +1032,12 @@ skipButton.MouseButton1Click:Connect(function()
 	if tutorialSkipped then return end
 	tutorialSkipped = true
 	print("PlaySequence: Tutorial skipped!")
-	
-	-- Fade out the skip button immediately
 	TweenService:Create(skipButton,
 		TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-		{TextTransparency = 1, BackgroundTransparency = 1}
-	):Play()
+		{TextTransparency = 1, BackgroundTransparency = 1}):Play()
 	TweenService:Create(skipStroke,
 		TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-		{Transparency = 1}
-	):Play()
+		{Transparency = 1}):Play()
 end)
 
 -- ============================================
@@ -914,12 +1064,11 @@ local function hideSlide(slide)
 	slide.card.BackgroundTransparency = 1
 	slide.title.TextTransparency = 1
 	slide.body.TextTransparency = 1
-	if slide.stroke then
-		slide.stroke.Transparency = 1
-	end
+	if slide.stroke  then slide.stroke.Transparency             = 1 end
+	if slide.divider then slide.divider.BackgroundTransparency  = 1 end
 	-- Reset card size/position for next entrance
-	slide.card.Size = UDim2.new(0.55, 0, 0.5, 0)
-	slide.card.Position = UDim2.new(0.5, 0, 0.45, 0)
+	slide.card.Size     = UDim2.new(0.56, 0, 0.50, 0)
+	slide.card.Position = UDim2.new(0.5, 0, 0.53, 0)
 	-- Reset title position
 	slide.title.Position = UDim2.new(0, 0, 0, 0)
 	slide.card.Visible = false
@@ -928,116 +1077,132 @@ end
 local function showSlide(slideIndex)
 	if tutorialSkipped then return end
 	print("PlaySequence: Showing slide " .. slideIndex .. " / " .. totalSlides)
-	
+
 	local slide = slideCards[slideIndex]
 	if not slide then
 		waitInterruptible(SLIDE_DURATION)
 		return
 	end
-	
-	-- Reset everything invisible and set initial transform
+
+	-- Reset all elements invisible before entrance
 	slide.card.BackgroundTransparency = 1
 	slide.title.TextTransparency = 1
 	slide.body.TextTransparency = 1
-	if slide.stroke then
-		slide.stroke.Transparency = 1
-	end
-	
-	-- Start card slightly smaller and offset up for entrance animation
-	slide.card.Size = UDim2.new(0.52, 0, 0.47, 0)
-	slide.card.Position = UDim2.new(0.5, 0, 0.43, 0)
-	
-	-- Start title offset to the left for slide-in
+	if slide.stroke  then slide.stroke.Transparency             = 1 end
+	if slide.divider then slide.divider.BackgroundTransparency  = 1 end
+
+	-- Card starts slightly smaller and higher for the bounce-in
+	slide.card.Size     = UDim2.new(0.53, 0, 0.47, 0)
+	slide.card.Position = UDim2.new(0.5, 0, 0.50, 0)
+
+	-- Title starts offset left for its slide-in
 	local originalTitlePos = slide.title.Position
-	slide.title.Position = UDim2.new(originalTitlePos.X.Scale - 0.05, originalTitlePos.X.Offset - 20, originalTitlePos.Y.Scale, originalTitlePos.Y.Offset)
-	
+	slide.title.Position = UDim2.new(
+		originalTitlePos.X.Scale - 0.04, originalTitlePos.X.Offset - 18,
+		originalTitlePos.Y.Scale, originalTitlePos.Y.Offset)
+
 	slide.card.Visible = true
-	
-	-- 1) Card scales up and slides into position with bounce
+
+	-- 1) Card bounces up to its resting size/position and fades in
 	local CARD_ENTRANCE = TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 	TweenService:Create(slide.card, CARD_ENTRANCE, {
-		Size = UDim2.new(0.55, 0, 0.5, 0),
-		Position = UDim2.new(0.5, 0, 0.45, 0),
-		BackgroundTransparency = 0
+		Size     = UDim2.new(0.56, 0, 0.50, 0),
+		Position = UDim2.new(0.5, 0, 0.53, 0),
+		BackgroundTransparency = 0.10,
 	}):Play()
-	if slide.stroke then
-		TweenService:Create(slide.stroke, FADE_IN, {Transparency = 0.4}):Play()
-	end
-	
-	-- 2) Title slides in from left after short delay
-	task.delay(0.15, function()
+	if slide.stroke then TweenService:Create(slide.stroke, FADE_IN, {Transparency = 0.35}):Play() end
+
+	-- 2) Accent divider reveals right as card settles
+	task.delay(0.10, function()
 		if tutorialSkipped then return end
-		TweenService:Create(slide.title, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-			Position = originalTitlePos,
-			TextTransparency = 0
-		}):Play()
+		if slide.divider then
+			TweenService:Create(slide.divider, TweenInfo.new(0.35), {BackgroundTransparency = 0.45}):Play()
+		end
 	end)
-	
-	-- 3) Body text fades in after title
-	task.delay(0.4, function()
+
+	-- 3) Title slides in from left
+	task.delay(0.18, function()
+		if tutorialSkipped then return end
+		TweenService:Create(slide.title,
+			TweenInfo.new(0.38, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+			{Position = originalTitlePos, TextTransparency = 0}):Play()
+	end)
+
+	-- 4) Body fades in after title settles
+	task.delay(0.42, function()
 		if tutorialSkipped then return end
 		TweenService:Create(slide.body, FADE_IN, {TextTransparency = 0}):Play()
 	end)
-	
-	-- 4) Border pulse animation while card is visible
+
+	-- 5) Gentle stroke pulse while card is visible
 	if slide.stroke then
 		task.spawn(function()
-			task.wait(0.5)  -- Wait for card to fully appear
+			task.wait(0.55)
 			while slide.card.Visible and not tutorialSkipped do
-				TweenService:Create(slide.stroke, TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-					Transparency = 0.6
-				}):Play()
-				task.wait(1.2)
+				TweenService:Create(slide.stroke,
+					TweenInfo.new(1.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+					{Transparency = 0.62}):Play()
+				task.wait(1.4)
 				if not slide.card.Visible or tutorialSkipped then break end
-				TweenService:Create(slide.stroke, TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-					Transparency = 0.3
-				}):Play()
-				task.wait(1.2)
+				TweenService:Create(slide.stroke,
+					TweenInfo.new(1.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+					{Transparency = 0.28}):Play()
+				task.wait(1.4)
 			end
 		end)
 	end
-	
-	-- Counter + progress bar
+
+	-- Counter pill + progress bar
 	slideCounter.Text = slideIndex .. " / " .. totalSlides
-	TweenService:Create(slideCounter, FADE_IN, {TextTransparency = 0.3}):Play()
-	
+	TweenService:Create(slideCounter, FADE_IN, {TextTransparency = 0.25}):Play()
+
 	local startProgress = (slideIndex - 1) / totalSlides
-	local endProgress = slideIndex / totalSlides
-	progressFill.Size = UDim2.new(startProgress, 0, 1, 0)
-	
+	local endProgress   = slideIndex / totalSlides
+	progressFill.Size   = UDim2.new(startProgress, 0, 1, 0)
+
 	local progressTween = TweenService:Create(
 		progressFill,
 		TweenInfo.new(SLIDE_DURATION, Enum.EasingStyle.Linear),
-		{Size = UDim2.new(endProgress, 0, 1, 0)}
-	)
+		{Size = UDim2.new(endProgress, 0, 1, 0)})
 	progressTween:Play()
-	
-	-- Hold for the slide duration (minus fade out time at end)
+
+	-- Hold for the slide duration (minus the fade-out)
 	local skipped = waitInterruptible(SLIDE_DURATION - 0.4)
-	
+
 	if skipped then
 		progressTween:Cancel()
 		hideSlide(slide)
 		return
 	end
-	
+
 	-- Fade everything out together
-	TweenService:Create(slide.card, FADE_OUT, {BackgroundTransparency = 1}):Play()
-	TweenService:Create(slide.title, FADE_OUT, {TextTransparency = 1}):Play()
-	TweenService:Create(slide.body, FADE_OUT, {TextTransparency = 1}):Play()
-	TweenService:Create(slideCounter, FADE_OUT, {TextTransparency = 1}):Play()
-	if slide.stroke then
-		TweenService:Create(slide.stroke, FADE_OUT, {Transparency = 1}):Play()
+	local fadeTargets = {
+		{slide.card,   {BackgroundTransparency = 1}},
+		{slide.title,  {TextTransparency = 1}},
+		{slide.body,   {TextTransparency = 1}},
+		{slideCounter, {TextTransparency = 1}},
+	}
+	if slide.stroke  then table.insert(fadeTargets, {slide.stroke,  {Transparency = 1}}) end
+	if slide.divider then table.insert(fadeTargets, {slide.divider, {BackgroundTransparency = 1}}) end
+
+	for _, t in ipairs(fadeTargets) do
+		TweenService:Create(t[1], FADE_OUT, t[2]):Play()
 	end
-	
+
 	local fadeSkipped = waitInterruptible(0.4)
 	if fadeSkipped then
 		hideSlide(slide)
 		return
 	end
-	
+
 	hideSlide(slide)
 end
+
+-- Ensure the cursor is free for the slide buttons/SKIP interaction.
+-- The full-screen tutorialBg covers the world, so Scriptable camera is safe here.
+camera.CameraType = Enum.CameraType.Scriptable
+UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+UserInputService.MouseIconEnabled = true
 
 -- Play all tutorial slides
 for i = 1, #TUTORIAL_SLIDES do
@@ -1051,28 +1216,18 @@ end
 
 if tutorialSkipped then
 	print("PlaySequence: Fading out tutorial (skipped)...")
-	
-	-- Hide all slide cards immediately
+
 	for _, slide in pairs(slideCards) do
 		hideSlide(slide)
 	end
-	
-	-- Fade out counter and progress bar
+
 	local fadeDuration = 0.5
-	
-	TweenService:Create(slideCounter,
-		TweenInfo.new(fadeDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-		{TextTransparency = 1}
-	):Play()
-	TweenService:Create(progressBg,
-		TweenInfo.new(fadeDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-		{BackgroundTransparency = 1}
-	):Play()
-	TweenService:Create(progressFill,
-		TweenInfo.new(fadeDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-		{BackgroundTransparency = 1}
-	):Play()
-	
+	local FO = TweenInfo.new(fadeDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	TweenService:Create(slideCounter,  FO, {TextTransparency = 1}):Play()
+	TweenService:Create(counterPill,   FO, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(progressBg,    FO, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(progressFill,  FO, {BackgroundTransparency = 1}):Play()
+
 	task.wait(fadeDuration)
 	print("PlaySequence: Tutorial fade-out complete!")
 else
@@ -2727,16 +2882,18 @@ chefRating1.TextSize = 16
 chefRating1.Font = Enum.Font.Gotham
 chefRating1.Parent = chefPanel1
 
--- Continue button
-local chefContinueBtn1 = Instance.new("TextLabel")
+-- Continue button (clickable TextButton so mouse click always works)
+local chefContinueBtn1 = Instance.new("TextButton")
 chefContinueBtn1.Size = UDim2.new(0, 260, 0, 55)
 chefContinueBtn1.Position = UDim2.new(0.5, -130, 0, 475)
 chefContinueBtn1.BackgroundColor3 = Color3.fromRGB(251, 146, 60)
-chefContinueBtn1.Text = "  Press [E] to Continue"
+chefContinueBtn1.Text = "Continue →"
 chefContinueBtn1.TextColor3 = Color3.fromRGB(25, 18, 15)
-chefContinueBtn1.TextSize = 18
+chefContinueBtn1.TextSize = 20
 chefContinueBtn1.Font = Enum.Font.GothamBold
-chefContinueBtn1.TextXAlignment = Enum.TextXAlignment.Left
+chefContinueBtn1.TextXAlignment = Enum.TextXAlignment.Center
+chefContinueBtn1.AutoButtonColor = true
+chefContinueBtn1.ZIndex = 3
 chefContinueBtn1.Parent = chefPanel1
 
 local contCorner1 = Instance.new("UICorner")
@@ -2745,34 +2902,96 @@ contCorner1.Parent = chefContinueBtn1
 
 print("PlaySequence: Showing ChefWorld results screen")
 
--- Wait for E key to continue
+-- Helper: force camera and mouse out of first-person lock.
+-- ChefWorldUI locks LockFirstPerson + zoom 0.5/0.5 during gameplay. We
+-- override ALL of those here so the results panel is fully usable.
+local function forceUnlockCamera()
+	pcall(function()
+		UserInputService.MouseBehavior   = Enum.MouseBehavior.Default
+		UserInputService.MouseIconEnabled = true
+		player.CameraMode                = Enum.CameraMode.Classic
+		player.CameraMinZoomDistance     = 0.5
+		player.CameraMaxZoomDistance     = 128
+		workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+	end)
+end
+
+forceUnlockCamera()
+
+-- Continuously re-assert the unlock while results are showing.
+-- This defeats any stray LockFirstPerson call that ChefWorldUI fires
+-- asynchronously (e.g. exitCinematic, CharacterAdded respawn lock, etc.).
 local chefDismissed1 = false
+local chefCameraHoldConn = game:GetService("RunService").Heartbeat:Connect(function()
+	if chefDismissed1 then return end
+	if player.CameraMode == Enum.CameraMode.LockFirstPerson
+		or player.CameraMaxZoomDistance < 10
+		or UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+		forceUnlockCamera()
+	end
+end)
+
+-- Emergency keyboard shortcut hint on the results panel.
+local escHint = Instance.new("TextLabel")
+escHint.Size            = UDim2.new(1, 0, 0, 20)
+escHint.Position        = UDim2.new(0, 0, 1, -24)
+escHint.BackgroundTransparency = 1
+escHint.Text            = "Camera stuck? Press [~] to reset"
+escHint.TextColor3      = Color3.fromRGB(180, 140, 100)
+escHint.TextSize        = 13
+escHint.Font            = Enum.Font.Gotham
+escHint.TextXAlignment  = Enum.TextXAlignment.Center
+escHint.ZIndex          = 3
+escHint.Parent          = chefPanel1
+
+-- Emergency shortcut: BackQuote/tilde forces a full camera unlock at any time.
+local chefEscConn = UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.BackQuote then
+		forceUnlockCamera()
+		print("PlaySequence: Emergency camera unlock triggered (~ key)")
+	end
+end)
+
+-- Shared dismiss function — triggered by button click OR E/Enter key
+local function dismissChefResults()
+	if chefDismissed1 then return end
+	chefDismissed1 = true
+	chefCameraHoldConn:Disconnect()
+	chefEscConn:Disconnect()
+
+	-- Fade to black for seamless transition
+	local fadeOut = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	TweenService:Create(chefResultsBg1, fadeOut, {BackgroundTransparency = 0, BackgroundColor3 = Color3.new(0, 0, 0)}):Play()
+
+	for _, child in pairs(chefPanel1:GetDescendants()) do
+		if child:IsA("TextLabel") or child:IsA("TextButton") then
+			TweenService:Create(child, fadeOut, {TextTransparency = 1}):Play()
+		end
+		if child:IsA("Frame") then
+			TweenService:Create(child, fadeOut, {BackgroundTransparency = 1}):Play()
+		end
+		if child:IsA("UIStroke") then
+			TweenService:Create(child, fadeOut, {Transparency = 1}):Play()
+		end
+	end
+	TweenService:Create(chefPanel1, fadeOut, {BackgroundTransparency = 1}):Play()
+
+	task.wait(0.8)
+	chefResultsGui1:Destroy()
+	print("PlaySequence: ChefWorld results dismissed")
+end
+
+-- Primary: click the button
+chefContinueBtn1.MouseButton1Click:Connect(dismissChefResults)
+
+-- Backup: E or Enter key still works
 local chefInputConn1
 chefInputConn1 = UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
 	if input.KeyCode == Enum.KeyCode.E or input.KeyCode == Enum.KeyCode.Return then
-		if chefDismissed1 then return end
-		chefDismissed1 = true
 		chefInputConn1:Disconnect()
-		
-		-- Fade to black for seamless transition
-		local fadeOut = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		TweenService:Create(chefResultsBg1, fadeOut, {BackgroundTransparency = 0, BackgroundColor3 = Color3.new(0, 0, 0)}):Play()
-		
-		for _, child in pairs(chefPanel1:GetDescendants()) do
-			if child:IsA("TextLabel") then
-				TweenService:Create(child, fadeOut, {TextTransparency = 1}):Play()
-			elseif child:IsA("Frame") then
-				TweenService:Create(child, fadeOut, {BackgroundTransparency = 1}):Play()
-			elseif child:IsA("UIStroke") then
-				TweenService:Create(child, fadeOut, {Transparency = 1}):Play()
-			end
-		end
-		TweenService:Create(chefPanel1, fadeOut, {BackgroundTransparency = 1}):Play()
-		
-		task.wait(0.8)
-		chefResultsGui1:Destroy()
-		print("PlaySequence: ChefWorld results dismissed")
+		dismissChefResults()
 	end
 end)
 
@@ -3112,6 +3331,13 @@ continueCorner2.Parent = nurseContinueBtn2
 
 print("PlaySequence: Showing NurseWorld results screen")
 
+-- Unlock cursor and camera for the results screen.
+-- FirstPersonLock (NurseWorld) locks the mouse; override it here so players
+-- can move the cursor freely over the results panel.
+UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+UserInputService.MouseIconEnabled = true
+player.CameraMode = Enum.CameraMode.Classic
+
 -- Wait for E key to continue
 local nurseDismissed2 = false
 local nurseInputConn2
@@ -3121,7 +3347,9 @@ nurseInputConn2 = UserInputService.InputBegan:Connect(function(input, gp)
 		if nurseDismissed2 then return end
 		nurseDismissed2 = true
 		nurseInputConn2:Disconnect()
-		
+
+		-- Cursor stays unlocked — Aviation (next world) has its own camera setup.
+
 		-- Fade to black for seamless transition to Game Complete
 		local fadeOut = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		TweenService:Create(nurseResultsBg2, fadeOut, {BackgroundTransparency = 0, BackgroundColor3 = Color3.new(0, 0, 0)}):Play()
@@ -3180,6 +3408,23 @@ local function runAviationWorld()
 		if skipFadeFrame and skipFadeFrame.Parent then skipFadeFrame.Visible = false end
 		return
 	end
+
+	-- Content streaming: PilotWorld's children (Trigger, DoorEntry, CameraPoints/CP_*)
+	-- only arrive on the client once the player is near that area. We pre-warm them
+	-- here with WaitForChild so the teleport and cinematic have the parts they need.
+	-- Timeouts are generous; if streaming still hasn't delivered after this we fall
+	-- back gracefully rather than crashing.
+	task.spawn(function()
+		-- Wait for the spawn trigger so teleportPlayerToWorld can find it
+		pilotWorld:WaitForChild("Trigger", 12)
+		-- Wait for camera point folder + at least one shot
+		local cpFolder = pilotWorld:WaitForChild("CameraPoints", 12)
+		if cpFolder then cpFolder:WaitForChild("CP_Tarmac", 8) end
+	end)
+	-- Give the WaitForChild requests a head-start before the teleport runs.
+	-- The pilot-module load (WaitForChild("Pilot") below) takes a few seconds and
+	-- acts as natural padding, so this small wait is usually free.
+	task.wait(0.5)
 
 	-- Boot the real pilot game. The server engine (PilotServer) is already running;
 	-- requiring PilotUI connects the client UI and fires ClientReady, which makes the
@@ -3841,10 +4086,26 @@ if hasRoom then
 	end
 	task.wait(0.6)
 
-	-- Menu panel
+	-- Compute overall average from all four world scores
+	local function scoreColor(s)
+		if s >= 70 then return Color3.fromRGB(68, 218, 118)
+		elseif s >= 40 then return Color3.fromRGB(251, 191, 36)
+		elseif s > 0  then return Color3.fromRGB(245, 100, 100)
+		else               return Color3.fromRGB(130, 140, 160) end
+	end
+	local worldOrder = { "Aviation", "Chef", "Nurse", "Cyber" }
+	local worldLabel = { Aviation = "✈  Aviation", Chef = "🍳  Culinary", Nurse = "🏥  Healthcare", Cyber = "💻  Cybersecurity" }
+	local playedCount, scoreSum = 0, 0
+	for _, k in ipairs(worldOrder) do
+		local s = finalScores[k] or 0
+		if s > 0 then playedCount += 1; scoreSum += s end
+	end
+	local overallAvg = playedCount > 0 and math.floor(scoreSum / playedCount) or 0
+
+	-- Menu panel — taller to fit score breakdown
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.new(0, 460, 0, 280)
-	panel.Position = UDim2.new(0.5, -230, 0.5, -140)
+	panel.Size = UDim2.new(0, 480, 0, 430)
+	panel.Position = UDim2.new(0.5, -240, 0.5, -215)
 	panel.BackgroundColor3 = Color3.fromRGB(18, 22, 34)
 	panel.BackgroundTransparency = 1
 	panel.Parent = endGui
@@ -3858,19 +4119,19 @@ if hasRoom then
 	panelStroke.Parent = panel
 
 	local panelTitle = Instance.new("TextLabel")
-	panelTitle.Size = UDim2.new(1, -40, 0, 50)
-	panelTitle.Position = UDim2.new(0, 20, 0, 36)
+	panelTitle.Size = UDim2.new(1, -40, 0, 40)
+	panelTitle.Position = UDim2.new(0, 20, 0, 22)
 	panelTitle.BackgroundTransparency = 1
 	panelTitle.Text = allZero and "HOLD ON..." or (isTie and "SO CLOSE!" or "CONGRATULATIONS")
 	panelTitle.TextColor3 = Color3.fromRGB(245, 248, 255)
-	panelTitle.TextSize = 30
+	panelTitle.TextSize = 28
 	panelTitle.Font = Enum.Font.GothamBlack
 	panelTitle.TextTransparency = 1
 	panelTitle.Parent = panel
 
 	local panelSub = Instance.new("TextLabel")
-	panelSub.Size = UDim2.new(1, -60, 0, 60)
-	panelSub.Position = UDim2.new(0, 30, 0, 92)
+	panelSub.Size = UDim2.new(1, -60, 0, 44)
+	panelSub.Position = UDim2.new(0, 30, 0, 66)
 	panelSub.BackgroundTransparency = 1
 	panelSub.TextWrapped = true
 	if allZero then
@@ -3882,14 +4143,123 @@ if hasRoom then
 			.. (CAREER_DISPLAY[winnerKey] or winnerKey) .. "."
 	end
 	panelSub.TextColor3 = Color3.fromRGB(185, 195, 215)
-	panelSub.TextSize = 18
+	panelSub.TextSize = 16
 	panelSub.Font = Enum.Font.GothamMedium
 	panelSub.TextTransparency = 1
 	panelSub.Parent = panel
 
+	-- Divider line
+	local divLine = Instance.new("Frame")
+	divLine.Size = UDim2.new(1, -60, 0, 1)
+	divLine.Position = UDim2.new(0, 30, 0, 118)
+	divLine.BackgroundColor3 = Color3.fromRGB(60, 70, 100)
+	divLine.BackgroundTransparency = 1
+	divLine.BorderSizePixel = 0
+	divLine.Parent = panel
+
+	-- "FINAL SCORES" label
+	local scoresHeader = Instance.new("TextLabel")
+	scoresHeader.Size = UDim2.new(1, -60, 0, 20)
+	scoresHeader.Position = UDim2.new(0, 30, 0, 128)
+	scoresHeader.BackgroundTransparency = 1
+	scoresHeader.Text = "FINAL SCORES"
+	scoresHeader.TextColor3 = Color3.fromRGB(140, 155, 190)
+	scoresHeader.TextSize = 11
+	scoresHeader.Font = Enum.Font.Code
+	scoresHeader.TextXAlignment = Enum.TextXAlignment.Left
+	scoresHeader.TextTransparency = 1
+	scoresHeader.Parent = panel
+
+	-- One row per world
+	local rowY = 154
+	local scoreRows = {}
+	for _, k in ipairs(worldOrder) do
+		local s = finalScores[k] or 0
+		local col = scoreColor(s)
+
+		local rowBg = Instance.new("Frame")
+		rowBg.Size = UDim2.new(1, -60, 0, 34)
+		rowBg.Position = UDim2.new(0, 30, 0, rowY)
+		rowBg.BackgroundColor3 = Color3.fromRGB(26, 32, 50)
+		rowBg.BackgroundTransparency = 1
+		rowBg.BorderSizePixel = 0
+		rowBg.Parent = panel
+		local rbCorner = Instance.new("UICorner")
+		rbCorner.CornerRadius = UDim.new(0, 7)
+		rbCorner.Parent = rowBg
+
+		local rowName = Instance.new("TextLabel")
+		rowName.Size = UDim2.new(0.6, 0, 1, 0)
+		rowName.Position = UDim2.new(0, 12, 0, 0)
+		rowName.BackgroundTransparency = 1
+		rowName.Text = worldLabel[k]
+		rowName.TextColor3 = Color3.fromRGB(210, 218, 235)
+		rowName.TextSize = 14
+		rowName.Font = Enum.Font.GothamMedium
+		rowName.TextXAlignment = Enum.TextXAlignment.Left
+		rowName.TextTransparency = 1
+		rowName.Parent = rowBg
+
+		local rowScore = Instance.new("TextLabel")
+		rowScore.Size = UDim2.new(0.38, 0, 1, 0)
+		rowScore.Position = UDim2.new(0.62, 0, 0, 0)
+		rowScore.BackgroundTransparency = 1
+		rowScore.Text = s > 0 and (tostring(s) .. " / 100") or "Skipped"
+		rowScore.TextColor3 = col
+		rowScore.TextSize = 14
+		rowScore.Font = Enum.Font.GothamBold
+		rowScore.TextXAlignment = Enum.TextXAlignment.Right
+		rowScore.TextTransparency = 1
+		rowScore.Parent = rowBg
+
+		table.insert(scoreRows, {rowBg, rowName, rowScore})
+		rowY = rowY + 40
+	end
+
+	-- Overall average bar
+	local avgBar = Instance.new("Frame")
+	avgBar.Size = UDim2.new(1, -60, 0, 40)
+	avgBar.Position = UDim2.new(0, 30, 0, rowY + 4)
+	avgBar.BackgroundColor3 = Color3.fromRGB(30, 38, 62)
+	avgBar.BackgroundTransparency = 1
+	avgBar.BorderSizePixel = 0
+	avgBar.Parent = panel
+	local abCorner = Instance.new("UICorner")
+	abCorner.CornerRadius = UDim.new(0, 9)
+	abCorner.Parent = avgBar
+	local abStroke = Instance.new("UIStroke")
+	abStroke.Color = scoreColor(overallAvg)
+	abStroke.Thickness = 1.5
+	abStroke.Transparency = 1
+	abStroke.Parent = avgBar
+
+	local avgLbl = Instance.new("TextLabel")
+	avgLbl.Size = UDim2.new(0.6, 0, 1, 0)
+	avgLbl.Position = UDim2.new(0, 12, 0, 0)
+	avgLbl.BackgroundTransparency = 1
+	avgLbl.Text = "OVERALL AVERAGE"
+	avgLbl.TextColor3 = Color3.fromRGB(235, 242, 255)
+	avgLbl.TextSize = 14
+	avgLbl.Font = Enum.Font.GothamBold
+	avgLbl.TextXAlignment = Enum.TextXAlignment.Left
+	avgLbl.TextTransparency = 1
+	avgLbl.Parent = avgBar
+
+	local avgVal = Instance.new("TextLabel")
+	avgVal.Size = UDim2.new(0.38, 0, 1, 0)
+	avgVal.Position = UDim2.new(0.62, 0, 0, 0)
+	avgVal.BackgroundTransparency = 1
+	avgVal.Text = overallAvg > 0 and (tostring(overallAvg) .. " / 100") or "N/A"
+	avgVal.TextColor3 = scoreColor(overallAvg)
+	avgVal.TextSize = 16
+	avgVal.Font = Enum.Font.GothamBlack
+	avgVal.TextXAlignment = Enum.TextXAlignment.Right
+	avgVal.TextTransparency = 1
+	avgVal.Parent = avgBar
+
 	local tryAgainBtn = Instance.new("TextButton")
-	tryAgainBtn.Size = UDim2.new(0, 260, 0, 56)
-	tryAgainBtn.Position = UDim2.new(0.5, -130, 1, -84)
+	tryAgainBtn.Size = UDim2.new(0, 260, 0, 50)
+	tryAgainBtn.Position = UDim2.new(0.5, -130, 1, -72)
 	tryAgainBtn.BackgroundColor3 = accent
 	tryAgainBtn.BackgroundTransparency = 1
 	tryAgainBtn.Text = "TRY AGAIN"
@@ -3908,6 +4278,22 @@ if hasRoom then
 	TweenService:Create(panelStroke, TweenInfo.new(0.5), { Transparency = 0 }):Play()
 	TweenService:Create(panelTitle, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
 	TweenService:Create(panelSub, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
+	TweenService:Create(divLine, TweenInfo.new(0.5), { BackgroundTransparency = 0.4 }):Play()
+	TweenService:Create(scoresHeader, TweenInfo.new(0.5), { TextTransparency = 0 }):Play()
+	for i, row in ipairs(scoreRows) do
+		local delay = 0.08 * i
+		task.delay(delay, function()
+			TweenService:Create(row[1], TweenInfo.new(0.4), { BackgroundTransparency = 0.3 }):Play()
+			TweenService:Create(row[2], TweenInfo.new(0.4), { TextTransparency = 0 }):Play()
+			TweenService:Create(row[3], TweenInfo.new(0.4), { TextTransparency = 0 }):Play()
+		end)
+	end
+	task.delay(0.35, function()
+		TweenService:Create(avgBar, TweenInfo.new(0.4), { BackgroundTransparency = 0.2 }):Play()
+		TweenService:Create(abStroke, TweenInfo.new(0.4), { Transparency = 0 }):Play()
+		TweenService:Create(avgLbl, TweenInfo.new(0.4), { TextTransparency = 0 }):Play()
+		TweenService:Create(avgVal, TweenInfo.new(0.4), { TextTransparency = 0 }):Play()
+	end)
 	TweenService:Create(tryAgainBtn, TweenInfo.new(0.6), { TextTransparency = 0, BackgroundTransparency = 0 }):Play()
 
 	local restarting = false

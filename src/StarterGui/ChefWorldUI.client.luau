@@ -16,6 +16,7 @@ local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
+local GameSettings = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GameSettings"))
 
 local plr = Players.LocalPlayer
 local playerGui = plr:WaitForChild("PlayerGui")
@@ -289,17 +290,22 @@ scoreValue.Position = UDim2.new(0, 0, 0, 20)
 
 local function updateScoreDisplay(newScore)
 	gameState.score = newScore
-	scoreValue.Text = tostring(newScore)
-	if newScore >= 70 then
-		scoreValue.TextColor3 = C.success
-	elseif newScore >= 40 then
-		scoreValue.TextColor3 = C.warning
+	if GameSettings.hardMode then
+		scoreValue.Text = "●●●"
+		scoreValue.TextColor3 = C.textMut
 	else
-		scoreValue.TextColor3 = C.error
+		scoreValue.Text = tostring(newScore)
+		if newScore >= 70 then
+			scoreValue.TextColor3 = C.success
+		elseif newScore >= 40 then
+			scoreValue.TextColor3 = C.warning
+		else
+			scoreValue.TextColor3 = C.error
+		end
+		task.delay(0.5, function()
+			scoreValue.TextColor3 = C.accent
+		end)
 	end
-	task.delay(0.5, function()
-		scoreValue.TextColor3 = C.accent
-	end)
 end
 
 --------------------------------------------------------------
@@ -939,16 +945,18 @@ exitCinematic = function()
 		cinematicOverlay.Visible = false
 	end)
 	
-	-- Restore camera to first-person
-	local cam = workspace.CurrentCamera
-	cam.CameraType = Enum.CameraType.Custom
-	plr.CameraMode = Enum.CameraMode.LockFirstPerson
-	plr.CameraMinZoomDistance = 0.5
-	plr.CameraMaxZoomDistance = 0.5
-	
-	-- Unlock character and hide mouse
-	unlockCharacter()
-	hideMouse()
+	-- Only re-lock first-person if the game is still actively in progress.
+	-- When resultsOverlay is visible, ChefWorld is over and PlaySequence owns
+	-- the camera — do NOT lock it back to first-person here.
+	if not resultsOverlay.Visible then
+		local cam = workspace.CurrentCamera
+		cam.CameraType = Enum.CameraType.Custom
+		plr.CameraMode = Enum.CameraMode.LockFirstPerson
+		plr.CameraMinZoomDistance = 0.5
+		plr.CameraMaxZoomDistance = 0.5
+		unlockCharacter()
+		hideMouse()
+	end
 end
 
 --------------------------------------------------------------
@@ -1942,11 +1950,12 @@ local function onResultsContinue()
 	resultsOverlay.Visible = false
 	gameState.inGame = false
 	unlockCharacter()
-	hideMouse()
-	
-	-- Restore first-person camera
-	plr.CameraMode = Enum.CameraMode.LockFirstPerson
-	
+	showMouse()
+
+	-- Do NOT re-lock first-person here. PlaySequence has already taken over
+	-- camera control (it shows its own results overlay and sets CameraMode to
+	-- Classic). Locking first-person again would override that and leave the
+	-- camera stuck in first-person on PlaySequence's results/transition screen.
 	PlayerReady:FireServer("COMPLETE")
 end
 

@@ -1,49 +1,64 @@
 -- EndRoomPersistent.server.luau
 -- The aptitude-reveal "EndRoom" sits far from every gameplay area. With
 -- StreamingEnabled, its parts (CamPos, RevealSpot, RevealPlatform, pedestal toppers)
--- stream OUT on the client because the player never travels there. That is why the
--- end-screen camera could not find CamPos and framed empty space above the room.
+-- stream OUT on the client because the player never travels there.
 --
--- Marking the EndRoom model "Persistent" keeps it fully replicated to every client
--- for the entire session, so the client always finds its parts (including CamPos).
+-- Marking the EndRoom model AND every descendant Model as Persistent keeps the full
+-- room — including Stage Light children and their PointLight/SpotLight descendants —
+-- immediately present on every client with no proximity-based delay.
 -- This is a no-op if the place does not use streaming.
 
 local ATTEMPT_TIMEOUT = 30
 
-local function makePersistent(inst)
-	if not inst then
-		return false
-	end
-	if not inst:IsA("Model") then
+local function setPersistent(model)
+	pcall(function()
+		model.ModelStreamingMode = Enum.ModelStreamingMode.Persistent
+	end)
+end
+
+local function makeAllPersistent(room)
+	if not room then return false end
+
+	if not room:IsA("Model") then
 		warn(
-			"[EndRoomPersistent] Found 'EndRoom' but it is a "
-				.. inst.ClassName
+			"[EndRoomPersistent] 'EndRoom' is a "
+				.. room.ClassName
 				.. ", not a Model — cannot mark it Persistent. "
-				.. "Right-click it in Studio and 'Group' the contents into a Model so CamPos always loads, "
-				.. "or set the model's ModelStreamingMode to Persistent manually."
+				.. "Right-click it in Studio and Group into a Model."
 		)
 		return false
 	end
 
-	local ok, err = pcall(function()
-		inst.ModelStreamingMode = Enum.ModelStreamingMode.Persistent
-	end)
-	if ok then
-		print("[EndRoomPersistent] EndRoom marked Persistent — it will always load on every client.")
-	else
-		warn("[EndRoomPersistent] Could not set ModelStreamingMode on EndRoom: " .. tostring(err))
+	-- Mark the root EndRoom model.
+	setPersistent(room)
+	print("[EndRoomPersistent] EndRoom marked Persistent.")
+
+	-- Mark every descendant Model (Pedestal groups, Stage Light models, etc.)
+	-- so they stream in immediately rather than waiting for player proximity.
+	local childCount = 0
+	for _, descendant in ipairs(room:GetDescendants()) do
+		if descendant:IsA("Model") then
+			setPersistent(descendant)
+			childCount += 1
+		end
 	end
-	return ok
+
+	print(string.format(
+		"[EndRoomPersistent] Marked %d descendant model(s) inside EndRoom as Persistent.",
+		childCount
+	))
+	return true
 end
 
--- Try immediately, then keep watching in case it is added/streamed later.
-if not makePersistent(workspace:FindFirstChild("EndRoom")) then
+-- Try immediately, then watch in case EndRoom is added later.
+if not makeAllPersistent(workspace:FindFirstChild("EndRoom")) then
 	task.spawn(function()
 		local room = workspace:WaitForChild("EndRoom", ATTEMPT_TIMEOUT)
 		if room then
-			makePersistent(room)
+			makeAllPersistent(room)
 		else
-			warn("[EndRoomPersistent] No 'EndRoom' model found in Workspace within " .. ATTEMPT_TIMEOUT .. "s.")
+			warn("[EndRoomPersistent] No 'EndRoom' model found in Workspace within "
+				.. ATTEMPT_TIMEOUT .. "s.")
 		end
 	end)
 end

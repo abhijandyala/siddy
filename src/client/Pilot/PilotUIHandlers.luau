@@ -1,30 +1,31 @@
 -- Pilot remote handlers + results (split to avoid Luau register limit)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local GameState = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GameState"))
+local GameState    = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GameState"))
+local GameSettings = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GameSettings"))
 local M = require(script.Parent:WaitForChild("PilotUIBase"))
 
 
 --------------------------------------------------------------
 -- RESULTS SCREEN
 --------------------------------------------------------------
-local resScr=Instance.new("Frame"); resScr.Size=UDim2.new(1,0,1,0); resScr.BackgroundColor3=Color3.new(0,0,0); resScr.BackgroundTransparency=0.55; resScr.Visible=false; resScr.ZIndex=42; resScr.Parent=M.sg
+local resScr=Instance.new("Frame"); resScr.Size=UDim2.new(1,0,1,0); resScr.BackgroundColor3=Color3.new(0,0,0); resScr.BackgroundTransparency=0.45; resScr.Visible=false; resScr.ZIndex=42; resScr.Parent=M.sg
 local resInner=Instance.new("Frame"); resInner.Size=UDim2.new(0,480,0,480); resInner.Position=UDim2.new(0.5,-240,0.5,-240); resInner.ZIndex=43; resInner.Parent=resScr; M.mkGlass(resInner, M.PANEL_TRANS)
 local resTitleL=M.mkLbl(resInner,"Flight Debrief",22,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Center,45); resTitleL.Size=UDim2.new(1,-40,0,32); resTitleL.Position=UDim2.new(0,20,0,24)
 local resScV=M.mkLbl(resInner,"0",52,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Center,45); resScV.Size=UDim2.new(1,0,0,58); resScV.Position=UDim2.new(0,0,0,68)
-local resAvgL=M.mkLbl(resInner,"average score",11,Enum.Font.GothamMedium,M.C.textMut,Enum.TextXAlignment.Center,45); resAvgL.Size=UDim2.new(1,0,0,16); resAvgL.Position=UDim2.new(0,0,0,126)
+local resAvgL=M.mkLbl(resInner,"average score",12,Enum.Font.GothamMedium,M.C.textMut,Enum.TextXAlignment.Center,45); resAvgL.Size=UDim2.new(1,0,0,16); resAvgL.Position=UDim2.new(0,0,0,126)
 local resRat=M.mkLbl(resInner,"",16,Enum.Font.GothamBold,M.C.warn,Enum.TextXAlignment.Center,44); resRat.Size=UDim2.new(1,0,0,22); resRat.Position=UDim2.new(0,0,0,148)
-local resMsg=M.mkLbl(resInner,"",11,Enum.Font.GothamMedium,M.C.textMut,Enum.TextXAlignment.Center,44); resMsg.Size=UDim2.new(1,-48,0,36); resMsg.Position=UDim2.new(0,24,0,172); resMsg.TextWrapped=true
+local resMsg=M.mkLbl(resInner,"",13,Enum.Font.GothamMedium,M.C.textSec,Enum.TextXAlignment.Center,44); resMsg.Size=UDim2.new(1,-48,0,36); resMsg.Position=UDim2.new(0,24,0,172); resMsg.TextWrapped=true
 
 local resBrk=Instance.new("Frame"); resBrk.Size=UDim2.new(1,-40,0,100); resBrk.Position=UDim2.new(0,20,0,218); resBrk.BackgroundTransparency=1; resBrk.ZIndex=44; resBrk.Parent=resInner
 local rBL=Instance.new("UIListLayout"); rBL.FillDirection=Enum.FillDirection.Horizontal; rBL.Padding=UDim.new(0,8); rBL.SortOrder=Enum.SortOrder.LayoutOrder; rBL.HorizontalAlignment=Enum.HorizontalAlignment.Center; rBL.Parent=resBrk
 local CARD_NAMES={"Pre-Flight","Startup","In-Flight","Landing"}
 local resCards={}
 for i=1,4 do
-	local card=Instance.new("Frame"); card.Size=UDim2.new(0,100,1,0); card.BackgroundColor3=M.C.bg; card.BackgroundTransparency=0.45; card.LayoutOrder=i; card.ZIndex=45; card.Parent=resBrk; M.mkC(card,8)
-	local cName=M.mkLbl(card,CARD_NAMES[i],8,Enum.Font.GothamMedium,M.C.textMut,Enum.TextXAlignment.Center,46); cName.Size=UDim2.new(1,0,0,14); cName.Position=UDim2.new(0,0,0,10)
-	local cGrade=M.mkLbl(card,"-",22,Enum.Font.GothamBold,M.C.textMut,Enum.TextXAlignment.Center,46); cGrade.Size=UDim2.new(1,0,0,28); cGrade.Position=UDim2.new(0,0,0,28)
-	local cScore=M.mkLbl(card,"-",10,Enum.Font.GothamMedium,M.C.textSec,Enum.TextXAlignment.Center,46); cScore.Size=UDim2.new(1,0,0,14); cScore.Position=UDim2.new(0,0,0,58)
-	local cBonus=M.mkLbl(card,"",9,Enum.Font.GothamMedium,M.C.accent,Enum.TextXAlignment.Center,46); cBonus.Size=UDim2.new(1,0,0,20); cBonus.Position=UDim2.new(0,0,0,74); cBonus.TextWrapped=true
+	local card=Instance.new("Frame"); card.Size=UDim2.new(0,100,1,0); card.BackgroundColor3=M.C.bg; card.BackgroundTransparency=0.25; card.LayoutOrder=i; card.ZIndex=45; card.Parent=resBrk; M.mkC(card,8)
+	local cName=M.mkLbl(card,CARD_NAMES[i],10,Enum.Font.GothamMedium,M.C.textSec,Enum.TextXAlignment.Center,46); cName.Size=UDim2.new(1,0,0,14); cName.Position=UDim2.new(0,0,0,10)
+	local cGrade=M.mkLbl(card,"-",22,Enum.Font.GothamBold,M.C.text,Enum.TextXAlignment.Center,46); cGrade.Size=UDim2.new(1,0,0,28); cGrade.Position=UDim2.new(0,0,0,28)
+	local cScore=M.mkLbl(card,"-",11,Enum.Font.GothamMedium,M.C.textSec,Enum.TextXAlignment.Center,46); cScore.Size=UDim2.new(1,0,0,14); cScore.Position=UDim2.new(0,0,0,58)
+	local cBonus=M.mkLbl(card,"",10,Enum.Font.GothamMedium,M.C.accent,Enum.TextXAlignment.Center,46); cBonus.Size=UDim2.new(1,0,0,20); cBonus.Position=UDim2.new(0,0,0,74); cBonus.TextWrapped=true
 	resCards[i]={card=card,grade=cGrade,score=cScore,bonus=cBonus}
 end
 local resTotalL=M.mkLbl(resInner,"Total: 0 pts",14,Enum.Font.GothamMedium,M.C.textSec,Enum.TextXAlignment.Center,45); resTotalL.Size=UDim2.new(1,0,0,20); resTotalL.Position=UDim2.new(0,0,0,332)
@@ -53,6 +54,7 @@ M.StartCinematic.OnClientEvent:Connect(function()
 	M.tutWaiting=false
 	M.gameFlowStarted=true
 	M.btnPulse:Pause()
+	pcall(M.showLocalCharacter)
 	M.blurOut()
 	M.playSfx("whoosh",0.5)
 	M.playMusic("ambient",0.18)
@@ -98,9 +100,14 @@ end)
 M.ScoreUpdate.OnClientEvent:Connect(function(newTotal,taskScore,taskIdx)
 	if not M.active then return end
 	M.totalScore=newTotal
-	M.scoreV.Text=tostring(newTotal)
-	M.TweenService:Create(M.scoreV,TweenInfo.new(0.15),{TextColor3=M.C.success}):Play()
-	task.delay(0.8,function() M.TweenService:Create(M.scoreV,TweenInfo.new(0.3),{TextColor3=M.C.text}):Play() end)
+	if GameSettings.hardMode then
+		M.scoreV.Text = "●●●"
+		M.scoreV.TextColor3 = M.C.textMut
+	else
+		M.scoreV.Text=tostring(newTotal)
+		M.TweenService:Create(M.scoreV,TweenInfo.new(0.15),{TextColor3=M.C.success}):Play()
+		task.delay(0.8,function() M.TweenService:Create(M.scoreV,TweenInfo.new(0.3),{TextColor3=M.C.text}):Play() end)
+	end
 end)
 
 M.ShowResults.OnClientEvent:Connect(function(s)
