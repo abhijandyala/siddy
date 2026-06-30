@@ -1299,4 +1299,42 @@ Room3CompleteEvent.OnClientEvent:Connect(function()
 	if renderConn then renderConn:Disconnect(); renderConn = nil end
 end)
 
+--------------------------------------------------------------
+-- TEARDOWN (NurseWorld ended — normal completion OR skip)
+-- Critical: this restores the camera so Room 3's scriptable camera
+-- lock does not bleed into the next world.
+--------------------------------------------------------------
+local r3TornDown = false
+local function teardownRoom3()
+	if r3TornDown then return end
+	r3TornDown = true
+	print("[Room3_Client] Tearing down")
+	phase = "IDLE"
+	pcall(hideInstr); pcall(stopCodeBlue); pcall(stopTimer); pcall(destroyMonitor)
+	pcall(restoreCamera); pcall(resetCameraHeight)
+	if renderConn then renderConn:Disconnect(); renderConn = nil end
+	if timerConn then timerConn:Disconnect(); timerConn = nil end
+	if cbPulseConn then cbPulseConn:Disconnect(); cbPulseConn = nil end
+	pcall(function() screenGui:Destroy() end)
+end
+
+task.spawn(function()
+	local nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	while not nurseActive do
+		task.wait(0.2)
+		nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	end
+	while not nurseActive.Value do task.wait(0.2) end
+	nurseActive:GetPropertyChangedSignal("Value"):Connect(function()
+		if not nurseActive.Value then teardownRoom3() end
+	end)
+end)
+
+task.spawn(function()
+	local stopRemote = remotes:FindFirstChild("StopNurseWorld") or remotes:WaitForChild("StopNurseWorld", 10)
+	if stopRemote then
+		stopRemote.OnClientEvent:Connect(teardownRoom3)
+	end
+end)
+
 print("[Room3_Client] Code Blue v4 — tutorial, room score, cinematic death, timers.")

@@ -253,9 +253,16 @@ function PasswordGame.Play()
 	prompt.TextTransparency = 1
 	roundLabel.TextTransparency = 1
 	
+	-- Skip-aware bailout: tear down the GUI and return the score so far
+	local function bail()
+		if gui and gui.Parent then gui:Destroy() end
+		return math.floor((score / NUM_ROUNDS) * 100)
+	end
+	
 	TweenService:Create(card, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
 	TweenService:Create(title, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
 	task.wait(0.5)
+	if GameState.SkipRequested then return bail() end
 	
 	-- Track current round to prevent stale callbacks from affecting wrong rounds
 	local currentRound = 0
@@ -263,6 +270,7 @@ function PasswordGame.Play()
 	
 	-- Play each round
 	for roundIndex = 1, NUM_ROUNDS do
+		if GameState.SkipRequested then break end
 		local roundData = ROUNDS[roundIndex]
 		answered = false
 		currentRound = roundIndex
@@ -363,7 +371,13 @@ function PasswordGame.Play()
 		-- Wait for answer or timeout
 		local waitStart = tick()
 		while not answered and (tick() - waitStart) < ROUND_TIME do
+			if GameState.SkipRequested then break end
 			task.wait(0.05)
+		end
+		
+		if GameState.SkipRequested then
+			for _, conn in pairs(connections) do conn:Disconnect() end
+			return bail()
 		end
 		
 		-- If timed out without answer
@@ -400,6 +414,8 @@ function PasswordGame.Play()
 		end
 		task.wait(0.4)
 	end
+	
+	if GameState.SkipRequested then return bail() end
 	
 	-- ============================================
 	-- SCORE SCREEN

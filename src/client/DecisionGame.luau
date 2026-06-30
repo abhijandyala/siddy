@@ -319,7 +319,12 @@ local function runSelectionPhase(bg)
 	end
 
 	while not selectedScenario do
+		if GameState.SkipRequested then break end
 		task.wait(0.05)
+	end
+
+	if GameState.SkipRequested then
+		return nil
 	end
 
 	-- Fade out
@@ -474,7 +479,12 @@ local function runChoicePhase(bg, scenario)
 	end
 
 	while not playerChoice do
+		if GameState.SkipRequested then break end
 		task.wait(0.05)
+	end
+
+	if GameState.SkipRequested then
+		return nil, scenCard
 	end
 
 	-- Highlight chosen, dim others
@@ -576,7 +586,11 @@ local function runOutcomePhase(scenCard, choice)
 
 	GameState:SetScore("Cyber", 3, finalScore)
 
-	task.wait(3.5)
+	local outcomeWaitStart = tick()
+	while (tick() - outcomeWaitStart) < 3.5 do
+		if GameState.SkipRequested then break end
+		task.wait(0.1)
+	end
 
 	-- Fade out card + labels
 	TweenService:Create(scenCard, TweenInfo.new(0.4), {BackgroundTransparency = 1}):Play()
@@ -610,9 +624,17 @@ function DecisionGame.Play()
 	bg.Parent = gui
 
 	local selectedScenario = runSelectionPhase(bg)
+	if GameState.SkipRequested or not selectedScenario then
+		gui:Destroy()
+		return 0
+	end
 	print("DecisionGame: Player chose: " .. selectedScenario.cardTitle)
 
 	local playerChoice, scenCard = runChoicePhase(bg, selectedScenario)
+	if GameState.SkipRequested or not playerChoice then
+		gui:Destroy()
+		return 0
+	end
 	print("DecisionGame: Player chose: " .. playerChoice.text)
 
 	local finalScore = runOutcomePhase(scenCard, playerChoice)

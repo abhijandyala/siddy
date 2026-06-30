@@ -124,6 +124,9 @@ local ScenarioCompleteEvent = createRemote("ScenarioComplete")
 local UpdateProgressEvent = createRemote("UpdateProgress")
 local UpdateWaypointEvent = createRemote("UpdateWaypoint")
 
+-- Skip / teardown remote (PlaySequence fires this when the player skips the world)
+local StopNurseWorldEvent = createRemote("StopNurseWorld")
+
 print("[NurseWorldManager] Remote events created - NurseWorld is now active!")
 
 --------------------------------------------------------------
@@ -599,6 +602,63 @@ R3_Action.OnServerEvent:Connect(function(player, action, score, passed)
 		R3_Complete:FireClient(player)
 		unlockNextRoom(player, 3)
 	end
+end)
+
+--------------------------------------------------------------
+-- SKIP / TEARDOWN
+-- PlaySequence fires StopNurseWorld when the player skips the world.
+-- Disable everything for that player so no prompts/handlers keep running.
+--------------------------------------------------------------
+local function disableAllPatientPrompts()
+	local nurseWorld = workspace:FindFirstChild("NurseWorld")
+	local beds = nurseWorld and nurseWorld:FindFirstChild("PatientBeds")
+	if not beds then return end
+	for _, bn in ipairs({ "PatientBed_01", "PatientBed_02", "PatientBed_03" }) do
+		local b = beds:FindFirstChild(bn)
+		if b then
+			local ip = b:FindFirstChild("InteractPoint") or b:FindFirstChildWhichIsA("BasePart")
+			if ip then
+				local p = ip:FindFirstChild("PatientPrompt")
+				if p then p.Enabled = false end
+			end
+		end
+	end
+end
+
+local nurseStopped = {}
+local function stopNurseForPlayer(player: Player)
+	if nurseStopped[player] then return end
+	nurseStopped[player] = true
+	print("[NurseWorldManager] Stopping NurseWorld for (skip):", player.Name)
+
+	local state = getState(player)
+	if state then
+		state.phase = "SKIPPED"
+		state.currentRoom = 0
+	end
+
+	-- Guard the Room 1 touch trigger so it can never start after a skip
+	room1Triggered[player] = true
+
+	-- Disable all room prompts
+	pcall(disableAllPatientPrompts)
+
+	-- Tell the player's Nurse client scripts to tear down
+	pcall(function() StopNurseWorldEvent:FireClient(player) end)
+
+	-- Unblock the orchestrator in case it is still waiting on completion
+	local completionEvent = ReplicatedStorage:FindFirstChild("WorldCompleted")
+	if completionEvent and completionEvent:IsA("BindableEvent") then
+		completionEvent:Fire(player, "NurseWorld", { finalScore = 0, skipped = true })
+	end
+end
+
+StopNurseWorldEvent.OnServerEvent:Connect(function(player)
+	stopNurseForPlayer(player)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	nurseStopped[player] = nil
 end)
 
 --------------------------------------------------------------

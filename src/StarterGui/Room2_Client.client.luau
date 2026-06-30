@@ -605,4 +605,45 @@ Room2CompleteEvent.OnClientEvent:Connect(function()
 	sg.Enabled = false; phase = "IDLE"
 end)
 
+--------------------------------------------------------------
+-- TEARDOWN (NurseWorld ended — normal completion OR skip)
+--------------------------------------------------------------
+local r2TornDown = false
+local function teardownRoom2()
+	if r2TornDown then return end
+	r2TornDown = true
+	print("[Room2_Client] Tearing down")
+	isActive = false
+	phase = "IDLE"
+	pcall(removeAllHL)
+	pcall(removeAllLabels)
+	-- Remove leftover point lights on interactable parts
+	for _, p in pairs(clickableObjects) do
+		if p then
+			local l = p:FindFirstChild("R2Light")
+			if l then pcall(function() l:Destroy() end) end
+		end
+	end
+	pcall(function() sg:Destroy() end)
+end
+
+task.spawn(function()
+	local nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	while not nurseActive do
+		task.wait(0.2)
+		nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	end
+	while not nurseActive.Value do task.wait(0.2) end
+	nurseActive:GetPropertyChangedSignal("Value"):Connect(function()
+		if not nurseActive.Value then teardownRoom2() end
+	end)
+end)
+
+task.spawn(function()
+	local stopRemote = remotes:FindFirstChild("StopNurseWorld") or remotes:WaitForChild("StopNurseWorld", 10)
+	if stopRemote then
+		stopRemote.OnClientEvent:Connect(teardownRoom2)
+	end
+end)
+
 print("[Room2_Client] v3 — tutorial, score screen, smoother flow.")

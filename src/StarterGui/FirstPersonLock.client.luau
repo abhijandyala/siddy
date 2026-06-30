@@ -67,7 +67,10 @@ local showParts = {
 --------------------------------------------------------------
 -- MAIN LOOP
 --------------------------------------------------------------
-RunService.RenderStepped:Connect(function(dt)
+local renderConn
+local respawnConn
+
+renderConn = RunService.RenderStepped:Connect(function(dt)
 	-- FOV
 	if camera.FieldOfView ~= TARGET_FOV then
 		camera.FieldOfView = TARGET_FOV
@@ -103,11 +106,47 @@ end)
 --------------------------------------------------------------
 -- RESPAWN
 --------------------------------------------------------------
-player.CharacterAdded:Connect(function()
+respawnConn = player.CharacterAdded:Connect(function()
 	task.delay(0.5, function()
+		if not nurseActive.Value then return end
 		player.CameraMinZoomDistance = 0.5
 		player.CameraMaxZoomDistance = 0.5
 	end)
+end)
+
+--------------------------------------------------------------
+-- TEARDOWN (when NurseWorld ends — normal completion OR skip)
+-- Without this the first-person lock would keep forcing FOV 65 and a
+-- locked zoom into the next world (Cybersecurity).
+--------------------------------------------------------------
+local tornDown = false
+local function teardown()
+	if tornDown then return end
+	tornDown = true
+	print("[FirstPersonLock] Tearing down first-person lock")
+	if renderConn then renderConn:Disconnect(); renderConn = nil end
+	if respawnConn then respawnConn:Disconnect(); respawnConn = nil end
+	pcall(function()
+		camera.FieldOfView = 70
+		player.CameraMinZoomDistance = 0.5
+		player.CameraMaxZoomDistance = 128
+	end)
+end
+
+nurseActive:GetPropertyChangedSignal("Value"):Connect(function()
+	if not nurseActive.Value then
+		teardown()
+	end
+end)
+
+-- Also respond to the explicit stop remote fired on skip
+task.spawn(function()
+	local remotes = ReplicatedStorage:FindFirstChild("NurseWorldRemotes")
+	if not remotes then return end
+	local stopRemote = remotes:FindFirstChild("StopNurseWorld")
+	if stopRemote then
+		stopRemote.OnClientEvent:Connect(teardown)
+	end
 end)
 
 print("[FirstPersonLock] Realistic first person initialized — FOV 65, head bob, arms visible.")

@@ -1,6 +1,8 @@
 -- CinematicCamera.client.luau
--- Controls the camera during the intro cinematic
--- Includes fade-in and camera shake
+-- DISABLED: Game starts directly on the main menu — no intro/wake-up cinematic.
+
+print("CinematicCamera: Disabled — game starts on main menu")
+do return end
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")

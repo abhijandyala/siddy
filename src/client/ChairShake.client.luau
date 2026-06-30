@@ -1,6 +1,8 @@
 -- ChairShake.client.luau
--- Creates a clean, subtle shake animation on the MC's chair/desk
--- Structure: ClassroomChairDesk > Seat (with Weld), Frame, Back, Desk, Seat
+-- DISABLED: No intro chair shake — game starts on main menu.
+
+print("ChairShake: Disabled — game starts on main menu")
+do return end
 
 local RunService = game:GetService("RunService")
 

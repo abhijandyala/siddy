@@ -1216,6 +1216,19 @@ ShowResultsEvent.OnClientEvent:Connect(function(summary)
 	-- Fade out background music
 	fadeOutSound("bgMusicMedical", 1.5)
 
+	-- Bridge Nurse completion to PlaySequence (the client-side world orchestrator).
+	-- NurseWorldManager fires a WorldCompleted BindableEvent on the server, but
+	-- BindableEvents don't cross the server/client boundary, so PlaySequence
+	-- (client) never receives the server's fire and would stay stuck waiting.
+	-- Fire the client-side event here so it advances to the next world.
+	local worldCompleted = ReplicatedStorage:FindFirstChild("WorldCompleted")
+	if not worldCompleted then
+		worldCompleted = Instance.new("BindableEvent")
+		worldCompleted.Name = "WorldCompleted"
+		worldCompleted.Parent = ReplicatedStorage
+	end
+	worldCompleted:Fire(player, "NurseWorld", summary)
+
 	standUp(function()
 		resScoreV.Text = tostring(summary.finalScore)
 		if summary.finalScore >= 67 then resCircStroke.Color = C.correct; resScoreV.TextColor3 = C.correct
@@ -1282,6 +1295,57 @@ end)
 local Room3StartEvent = remotes:WaitForChild("Room3Start")
 Room3StartEvent.OnClientEvent:Connect(function()
 	guideFrame.Visible = false
+end)
+
+--------------------------------------------------------------
+-- TEARDOWN (NurseWorld ended — normal completion OR skip)
+-- Restores camera/character and destroys the UI so nothing lingers
+-- into the next world.
+--------------------------------------------------------------
+local nurseUITornDown = false
+local function teardownNurseUI()
+	if nurseUITornDown then return end
+	nurseUITornDown = true
+	print("[NurseUI] Tearing down NurseWorld UI")
+
+	inputOn = false
+	pcall(stopGlow)
+
+	-- Stop all sounds we created
+	for _, s in pairs(sounds) do
+		if s then pcall(function() s:Stop() end) end
+	end
+
+	-- Restore camera + character to normal
+	pcall(function()
+		camera.CameraType = Enum.CameraType.Custom
+	end)
+	pcall(showCharacter)
+
+	-- Destroy the UI
+	pcall(function() sg:Destroy() end)
+end
+
+task.spawn(function()
+	local nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	while not nurseActive do
+		task.wait(0.2)
+		nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	end
+	-- Only tear down once it has gone false AFTER having been active
+	while not nurseActive.Value do task.wait(0.2) end
+	nurseActive:GetPropertyChangedSignal("Value"):Connect(function()
+		if not nurseActive.Value then
+			teardownNurseUI()
+		end
+	end)
+end)
+
+task.spawn(function()
+	local stopRemote = remotes:FindFirstChild("StopNurseWorld") or remotes:WaitForChild("StopNurseWorld", 10)
+	if stopRemote then
+		stopRemote.OnClientEvent:Connect(teardownNurseUI)
+	end
 end)
 
 print("[NurseUI] Office file review UI v5 initialized — keyboard + mouse driven.")

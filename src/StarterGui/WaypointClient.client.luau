@@ -450,4 +450,38 @@ end
 
 init()
 
+--------------------------------------------------------------
+-- TEARDOWN (NurseWorld ended — normal completion OR skip)
+--------------------------------------------------------------
+local wpTornDown = false
+local function teardownWaypoints()
+	if wpTornDown then return end
+	wpTornDown = true
+	print("[WaypointClient] Tearing down")
+	pcall(hideWaypoints) -- removeAllArrows + deactivateAllFloorPaths + stopPulse
+	for _, bb in pairs(doorLabels) do
+		if bb then pcall(function() bb:Destroy() end) end
+	end
+	doorLabels = {}
+end
+
+task.spawn(function()
+	local nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	while not nurseActive do
+		task.wait(0.2)
+		nurseActive = ReplicatedStorage:FindFirstChild("NurseWorldActive")
+	end
+	while not nurseActive.Value do task.wait(0.2) end
+	nurseActive:GetPropertyChangedSignal("Value"):Connect(function()
+		if not nurseActive.Value then teardownWaypoints() end
+	end)
+end)
+
+task.spawn(function()
+	local stopRemote = remotes:FindFirstChild("StopNurseWorld") or remotes:WaitForChild("StopNurseWorld", 10)
+	if stopRemote then
+		stopRemote.OnClientEvent:Connect(teardownWaypoints)
+	end
+end)
+
 print("[WaypointClient] Room navigation system initialized — arrows, floor glow, room labels.")

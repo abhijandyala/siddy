@@ -4,6 +4,11 @@
 -- Fall and freeze are timed to match animation ending
 
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+-- DISABLED: No intro MC wake-up animation — game starts on the main menu.
+print("=== MCAnimationController DISABLED — game starts on main menu ===")
+do return end
 
 print("=== MCAnimationController START ===")
 
@@ -11,10 +16,14 @@ print("=== MCAnimationController START ===")
 local GAME_START_TIME = tick()
 
 -- CONFIGURATION
-local FALLING_ANIMATION_ID = "rbxassetid://107489504282824"  -- NewFallingAnimationLonger (1.0s)
-local SLEEPING_ANIMATION_ID = "rbxassetid://83042459456148"  -- Sleeping_AnimationSleepy
+local FALLING_ANIMATION_ID = "rbxassetid://87696447889114"  -- NewFallingAnimationLonger (1.0s)
+local SLEEPING_ANIMATION_ID = "rbxassetid://128410304289406"  -- Sleeping_AnimationSleepy
 local FALL_TIME = 0.4  -- How long the fall takes
 local CAMERA2_START_TIME = 0.8  -- Camera 2 starts 0.2s earlier
+
+-- SYNC CHECK: if Studio doesn't print these exact IDs, Rojo did NOT sync this file.
+print(">>> SYNC CHECK v2 — Falling ID: " .. FALLING_ANIMATION_ID)
+print(">>> SYNC CHECK v2 — Sleeping ID: " .. SLEEPING_ANIMATION_ID)
 
 -- STEP 1: Find MC
 print("Step 1: Finding MC...")
@@ -66,6 +75,67 @@ if not animator then
 	animator.Parent = humanoid
 end
 
+-- ============================================
+-- PROCEDURAL SLEEPING POSE (no uploaded animation needed)
+-- Fallback used when the sleeping animation asset is missing/invalid.
+-- Slumps the MC forward as if asleep at the desk by rotating joints directly.
+-- All angles are in degrees and TUNABLE — tweak these if the pose looks off.
+-- ============================================
+local POSE_TORSO_LEAN  = 50   -- how far the upper body slumps forward onto the desk
+local POSE_HEAD_TILT   = 30   -- how far the head droops down
+local POSE_ARM_FORWARD = 70   -- how far the arms reach forward/down onto the desk (set 0 to disable)
+
+local function findJoint(name)
+	for _, d in pairs(mc:GetDescendants()) do
+		if d:IsA("Motor6D") and d.Name == name then
+			return d
+		end
+	end
+	return nil
+end
+
+local function applySleepingPose()
+	-- Stop anything that would fight our manual pose
+	local animateScript = mc:FindFirstChild("Animate")
+	if animateScript then
+		animateScript.Disabled = true
+	end
+	for _, t in pairs(animator:GetPlayingAnimationTracks()) do
+		t:Stop(0)
+	end
+
+	local isR15 = mc:FindFirstChild("UpperTorso") ~= nil
+	local poseTargets = {}
+
+	local function pose(name, angles)
+		local joint = findJoint(name)
+		if joint then
+			poseTargets[joint] = joint.C0 * angles
+		end
+	end
+
+	if isR15 then
+		pose("Waist", CFrame.Angles(math.rad(POSE_TORSO_LEAN), 0, 0))
+		pose("Neck", CFrame.Angles(math.rad(POSE_HEAD_TILT), 0, 0))
+		pose("LeftShoulder", CFrame.Angles(math.rad(POSE_ARM_FORWARD), 0, 0))
+		pose("RightShoulder", CFrame.Angles(math.rad(POSE_ARM_FORWARD), 0, 0))
+	else
+		pose("RootJoint", CFrame.Angles(math.rad(POSE_TORSO_LEAN), 0, 0))
+		pose("Neck", CFrame.Angles(math.rad(POSE_HEAD_TILT), 0, 0))
+		pose("Left Shoulder", CFrame.Angles(math.rad(POSE_ARM_FORWARD), 0, 0))
+		pose("Right Shoulder", CFrame.Angles(math.rad(POSE_ARM_FORWARD), 0, 0))
+	end
+
+	-- Apply and HOLD the pose (re-assert every frame so nothing overrides it)
+	RunService.Heartbeat:Connect(function()
+		for joint, targetC0 in pairs(poseTargets) do
+			joint.C0 = targetC0
+		end
+	end)
+
+	print("  Procedural sleeping pose applied (" .. (isR15 and "R15" or "R6") .. ") — tune POSE_* constants if it looks off")
+end
+
 -- STEP 5: Load animations
 print("Step 3: Loading animations...")
 
@@ -79,31 +149,33 @@ local sleepingAnim = Instance.new("Animation")
 sleepingAnim.AnimationId = SLEEPING_ANIMATION_ID
 local sleepingTrack = animator:LoadAnimation(sleepingAnim)
 
--- Wait for falling animation to load
-local waited = 0
-while track.Length == 0 and waited < 5 do
+-- Wait for BOTH animations to load in parallel, with a short timeout.
+-- A short timeout matters: if an animation can't load (e.g. not owned by this
+-- account), we must NOT stall here — otherwise the MC appears after the intro
+-- cinematic has already ended. Successful loads exit this loop early.
+local LOAD_TIMEOUT = 2.0
+local loadWaited = 0
+while (track.Length == 0 or sleepingTrack.Length == 0) and loadWaited < LOAD_TIMEOUT do
 	task.wait(0.1)
-	waited = waited + 0.1
+	loadWaited = loadWaited + 0.1
 end
 
-if track.Length == 0 then
-	warn("FAILED: Falling animation didn't load!")
-	return
-end
+local fallingLoaded = track.Length > 0
+local sleepingLoaded = sleepingTrack.Length > 0
 
-print("  Falling animation loaded! Length: " .. track.Length .. "s")
-
--- Wait for sleeping animation to load
-waited = 0
-while sleepingTrack.Length == 0 and waited < 5 do
-	task.wait(0.1)
-	waited = waited + 0.1
-end
-
-if sleepingTrack.Length == 0 then
-	warn("WARNING: Sleeping animation didn't load, will skip")
+if fallingLoaded then
+	print("  Falling animation loaded! Length: " .. track.Length .. "s")
 else
+	warn("WARNING: Falling animation (" .. FALLING_ANIMATION_ID .. ") didn't load.")
+	warn("  >>> MC will still appear and fall, just without the falling pose.")
+	warn("  >>> This usually means the animation isn't owned by this game's account/group.")
+	warn("  >>> Re-upload it under your account and update FALLING_ANIMATION_ID.")
+end
+
+if sleepingLoaded then
 	print("  Sleeping animation loaded! Length: " .. sleepingTrack.Length .. "s")
+else
+	warn("WARNING: Sleeping animation (" .. SLEEPING_ANIMATION_ID .. ") didn't load — MC will sit without the sleeping pose.")
 end
 
 -- STEP 6: Setup fall positions
@@ -128,8 +200,8 @@ track.Priority = Enum.AnimationPriority.Action4
 -- Fall should END exactly when animation ENDS
 -- ============================================
 
--- Fall ends when animation ends
-local FALL_END_TIME = track.Length  -- e.g., 1.0s
+-- Fall ends when animation ends (fallback to 1.0s if the animation didn't load)
+local FALL_END_TIME = fallingLoaded and track.Length or 1.0
 local FALL_START_TIME = FALL_END_TIME - FALL_TIME  -- e.g., 1.0 - 0.4 = 0.6s
 
 print("  TIMING DEBUG:")
@@ -144,8 +216,10 @@ print("    >>> Fall should end EXACTLY when animation ends!")
 -- START ANIMATION IMMEDIATELY
 -- ============================================
 print("Step 4: Starting animation NOW (game start)...")
-track:Play()
-print("  Animation PLAYING from time 0!")
+if fallingLoaded then
+	track:Play()
+	print("  Animation PLAYING from time 0!")
+end
 
 -- Wait until it's time for fall to start
 -- MC becomes visible AND fall starts at the same moment
@@ -187,23 +261,22 @@ print("  Fall complete!")
 
 -- IMMEDIATELY freeze animation at current position when fall ends
 -- Don't wait for animation to reach near-end - freeze NOW
-local currentAnimPos = track.TimePosition
-track:AdjustSpeed(0)
-print("  >>> FROZEN IMMEDIATELY at TimePosition: " .. string.format("%.3f", currentAnimPos) .. " / " .. track.Length)
-
--- Use the actual game start time we tracked
-
--- Keep falling animation frozen at current position until sleeping animation starts
 local sleepingStarted = false
-local frozenPosition = track.TimePosition  -- Save the position we froze at
 
-task.spawn(function()
-	while not sleepingStarted do
-		task.wait(0.05)
-		track:AdjustSpeed(0)
-		track.TimePosition = frozenPosition  -- Keep at same position
-	end
-end)
+if fallingLoaded then
+	local frozenPosition = track.TimePosition  -- Save the position we froze at
+	track:AdjustSpeed(0)
+	print("  >>> FROZEN IMMEDIATELY at TimePosition: " .. string.format("%.3f", frozenPosition) .. " / " .. track.Length)
+
+	-- Keep falling animation frozen at current position until sleeping animation starts
+	task.spawn(function()
+		while not sleepingStarted do
+			task.wait(0.05)
+			track:AdjustSpeed(0)
+			track.TimePosition = frozenPosition  -- Keep at same position
+		end
+	end)
+end
 
 print("  Falling animation frozen, waiting for camera 2...")
 
@@ -228,36 +301,44 @@ sleepingStarted = true
 
 -- INSTANT SWITCH: Stop falling, start sleeping at same moment
 -- No fade - the camera cut hides the transition!
-track:Stop(0)  -- Instant stop
+if fallingLoaded then
+	track:Stop(0)  -- Instant stop
+end
 
--- Configure and play sleeping animation IMMEDIATELY
-sleepingTrack.Looped = false
-sleepingTrack.Priority = Enum.AnimationPriority.Action4
-sleepingTrack:Play(0)  -- Instant start, no fade
+-- Configure and play sleeping animation IMMEDIATELY (only if it loaded)
+if sleepingLoaded then
+	sleepingTrack.Looped = false
+	sleepingTrack.Priority = Enum.AnimationPriority.Action4
+	sleepingTrack:Play(0)  -- Instant start, no fade
 
-print("  Sleeping animation PLAYING! (3.5s, plays once)")
+	print("  Sleeping animation PLAYING! (3.5s, plays once)")
 
--- Freeze on last frame after animation completes
-task.spawn(function()
-	-- Wait for animation to nearly finish
-	local freezeTime = sleepingTrack.Length - 0.05
-	
-	-- Monitor and freeze before it ends
-	while sleepingTrack.TimePosition < freezeTime do
-		task.wait(0.05)
-	end
-	
-	-- Freeze on last frame
-	sleepingTrack:AdjustSpeed(0)
-	sleepingTrack.TimePosition = sleepingTrack.Length - 0.01
-	print("  Sleeping animation frozen on last frame!")
-	
-	-- Keep it frozen indefinitely
-	while true do
-		task.wait(0.1)
+	-- Freeze on last frame after animation completes
+	task.spawn(function()
+		-- Wait for animation to nearly finish
+		local freezeTime = sleepingTrack.Length - 0.05
+
+		-- Monitor and freeze before it ends
+		while sleepingTrack.TimePosition < freezeTime do
+			task.wait(0.05)
+		end
+
+		-- Freeze on last frame
 		sleepingTrack:AdjustSpeed(0)
 		sleepingTrack.TimePosition = sleepingTrack.Length - 0.01
-	end
-end)
+		print("  Sleeping animation frozen on last frame!")
+
+		-- Keep it frozen indefinitely
+		while true do
+			task.wait(0.1)
+			sleepingTrack:AdjustSpeed(0)
+			sleepingTrack.TimePosition = sleepingTrack.Length - 0.01
+		end
+	end)
+else
+	-- No valid sleeping animation — pose him asleep in code instead.
+	print("Step 9b: No sleeping animation — applying procedural sleeping pose.")
+	applySleepingPose()
+end
 
 print("=== MCAnimationController COMPLETE ===")

@@ -50,6 +50,8 @@ local OrderTimedOut   = mkR("OrderTimedOut")
 local ActivateChefWorld = mkR("ActivateChefWorld")  -- PlaySequence fires this when player enters
 local RequestUIReady  = mkR("RequestUIReady")       -- Server fires this to tell client to respond
 local ChefUIReady     = mkR("ChefUIReady")          -- ChefWorldUI fires this in response
+local DeactivateChefWorld = mkR("DeactivateChefWorld") -- PlaySequence fires this when player skips the world
+local StopChefWorld   = mkR("StopChefWorld")        -- Server fires this to tell client to fully tear down
 
 print("[ChefWorld] Remote events created immediately!")
 print("[ChefWorld] Waiting for client to activate via ActivateChefWorld remote...")
@@ -479,6 +481,37 @@ ChefUIReady.OnServerEvent:Connect(function(plr)
 			autoStartForPlayer(plr)
 		end
 	end)
+end)
+
+--------------------------------------------------------------
+-- SKIP / DEACTIVATION HANDLER
+-- PlaySequence fires DeactivateChefWorld when the player skips the world.
+-- Fully stop everything for that player so nothing keeps running in the background.
+--------------------------------------------------------------
+local function stopChefWorldForPlayer(plr)
+	print("[ChefWorld] Stopping ChefWorld for (skip):", plr.Name)
+
+	-- Cancel any running timers for this player
+	local st = state[plr]
+	if st then
+		pcall(function() cancelAll(st) end)
+	end
+
+	-- Disable all station prompts so they can't be triggered
+	pcall(function() setPromptsEnabled(false) end)
+
+	-- Reset this player's game state and activation tracking (idempotent)
+	state[plr] = newState()
+	activatedPlayers[plr] = nil
+	pendingTutorial[plr] = nil
+
+	-- Tell the client to tear down its ChefWorld UI / camera / input
+	pcall(function() StopChefWorld:FireClient(plr) end)
+end
+
+DeactivateChefWorld.OnServerEvent:Connect(function(plr)
+	print("[ChefWorld] DeactivateChefWorld received from:", plr.Name)
+	stopChefWorldForPlayer(plr)
 end)
 
 -- Setup station prompts

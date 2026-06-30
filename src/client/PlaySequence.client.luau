@@ -1,13 +1,17 @@
 -- PlaySequence.client.luau
--- Handles the post-Play flow:
---   1. 15-second forced tutorial (3 image slides, 5s each)
---   2. Camera transition to Camera_LabIntro in the Cybersecurity ComputerRoom
---   3. Fade from black to reveal the lab
+-- Main game flow (after the player presses Play on the menu):
+--   1. Instructions  (tutorial slides)
+--   2. Aviation      (pilot world)
+--   3. Chef
+--   4. Nurse
+--   5. Cyber         (final career)
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
+local Lighting = game:GetService("Lighting")
 
 local GameState = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GameState"))
 local HackingBackground = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("HackingBackground"))
@@ -113,15 +117,20 @@ local UserInputService = game:GetService("UserInputService")
 
 -- World colors
 local WORLD_COLORS = {
+	Aviation = Color3.fromRGB(56, 160, 235),  -- Sky blue
 	Cyber = Color3.fromRGB(60, 140, 255),    -- Blue
 	Medical = Color3.fromRGB(74, 222, 128),   -- Green
-	Chef = Color3.fromRGB(251, 146, 60),      -- Orange (not used, skip hidden in chef)
+	Chef = Color3.fromRGB(251, 146, 60),      -- Orange
 }
 
 -- Current world tracking
 local currentWorld = "Cyber"
 local skipTriggered = false
 local skipButtonVisible = false
+
+-- Final per-career averages, captured at the end of each world (0 if skipped).
+-- Used by the end-screen "aptitude reveal" to pick the player's best-fit career.
+local finalScores = { Aviation = 0, Chef = 0, Nurse = 0, Cyber = 0 }
 
 -- Create skip button GUI
 local skipGui = Instance.new("ScreenGui")
@@ -214,6 +223,8 @@ end)
 local function performSkip()
 	if skipTriggered then return end
 	skipTriggered = true
+	-- Cooperative skip: tells minigame/world loops (cyber + aviation modules) to bail out
+	GameState:RequestSkip()
 	
 	print("PlaySequence: Skip triggered for world: " .. currentWorld)
 	
@@ -287,6 +298,281 @@ local function cleanupChefWorld(fadeMusic)
 	end
 end
 
+-- ============================================
+-- SHARED WORLD TRANSITION SYSTEM (used by every world for a consistent theme)
+-- ============================================
+
+-- Single black overlay reused for every world transition (starts invisible)
+local worldFadeGui = Instance.new("ScreenGui")
+worldFadeGui.Name = "WorldTransitionFade"
+worldFadeGui.IgnoreGuiInset = true
+worldFadeGui.DisplayOrder = 900
+worldFadeGui.Parent = playerGui
+
+local worldFadeFrame = Instance.new("Frame")
+worldFadeFrame.Size = UDim2.new(1, 0, 1, 0)
+worldFadeFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+worldFadeFrame.BackgroundTransparency = 1
+worldFadeFrame.BorderSizePixel = 0
+worldFadeFrame.Parent = worldFadeGui
+
+-- Shared completion event so server worlds (Chef/Nurse) can report back
+local worldCompleted = ReplicatedStorage:FindFirstChild("WorldCompleted")
+if not worldCompleted then
+	worldCompleted = Instance.new("BindableEvent")
+	worldCompleted.Name = "WorldCompleted"
+	worldCompleted.Parent = ReplicatedStorage
+	print("PlaySequence: Created WorldCompleted BindableEvent")
+end
+
+-- Reset the skip state at the start of each world so multiple worlds can be skipped
+local function resetSkipForWorld(world)
+	skipTriggered = false
+	GameState:ClearSkip()
+	updateSkipButtonColor(world)
+end
+
+-- Remove any leftover transition / fade GUIs from earlier stages (idempotent)
+local function clearLeftoverFades()
+	for _, g in pairs(playerGui:GetChildren()) do
+		if g:IsA("ScreenGui") and (g.Name == "TutorialOverlay" or g.Name == "PlayTransitionBlack"
+			or g.Name == "CinematicFade" or g.Name == "CinematicFadeOut" or g.Name == "MenuFade") then
+			g:Destroy()
+		end
+	end
+end
+
+-- Fade the screen to solid black and show a career title card (consistent for all worlds)
+local function beginWorldTransition(titleText, subtitleText, accentColor)
+	accentColor = accentColor or Color3.fromRGB(255, 255, 255)
+
+	-- Cover the screen with black
+	worldFadeGui.DisplayOrder = 900
+	worldFadeFrame.Visible = true
+	TweenService:Create(worldFadeFrame,
+		TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{BackgroundTransparency = 0}
+	):Play()
+	task.wait(0.5)
+
+	-- Now that black covers everything, remove old fade overlays and the skip fade
+	clearLeftoverFades()
+	if skipFadeFrame and skipFadeFrame.Parent then
+		skipFadeFrame.Visible = false
+		skipFadeFrame.BackgroundTransparency = 1
+	end
+
+	-- Title card
+	local tcGui = Instance.new("ScreenGui")
+	tcGui.Name = "CareerTitleCard"
+	tcGui.IgnoreGuiInset = true
+	tcGui.DisplayOrder = 910
+	tcGui.Parent = playerGui
+
+	local tcBg = Instance.new("Frame")
+	tcBg.Size = UDim2.new(1, 0, 1, 0)
+	tcBg.BackgroundTransparency = 1
+	tcBg.BorderSizePixel = 0
+	tcBg.Parent = tcGui
+
+	local tcTitle = Instance.new("TextLabel")
+	tcTitle.Size = UDim2.new(1, 0, 0, 80)
+	tcTitle.Position = UDim2.new(0, 0, 0.35, 0)
+	tcTitle.BackgroundTransparency = 1
+	tcTitle.Text = titleText
+	tcTitle.TextColor3 = accentColor
+	tcTitle.TextSize = 48
+	tcTitle.Font = Enum.Font.GothamBold
+	tcTitle.TextTransparency = 1
+	tcTitle.Parent = tcBg
+
+	local tcSubtitle = Instance.new("TextLabel")
+	tcSubtitle.Size = UDim2.new(1, 0, 0, 40)
+	tcSubtitle.Position = UDim2.new(0, 0, 0.45, 0)
+	tcSubtitle.BackgroundTransparency = 1
+	tcSubtitle.Text = subtitleText or ""
+	tcSubtitle.TextColor3 = Color3.fromRGB(156, 163, 175)
+	tcSubtitle.TextSize = 24
+	tcSubtitle.Font = Enum.Font.GothamMedium
+	tcSubtitle.TextTransparency = 1
+	tcSubtitle.TextWrapped = true
+	tcSubtitle.Parent = tcBg
+
+	TweenService:Create(tcTitle, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+	TweenService:Create(tcSubtitle, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+	task.wait(2.5)
+	TweenService:Create(tcTitle, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
+	TweenService:Create(tcSubtitle, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
+	task.wait(0.5)
+	tcGui:Destroy()
+end
+
+-- Fade from black to reveal the current world
+local function revealWorld(duration)
+	duration = duration or 1.0
+	worldFadeFrame.Visible = true
+	TweenService:Create(worldFadeFrame,
+		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{BackgroundTransparency = 1}
+	):Play()
+	task.wait(duration)
+end
+
+-- Instantly cover the screen in black (used to hand off cleanly between worlds)
+local function coverBlack()
+	worldFadeFrame.Visible = true
+	worldFadeFrame.BackgroundTransparency = 0
+end
+
+-- ============================================
+-- WORLD TELEPORT (shared across all careers)
+-- Place an Anchored part named "WorldSpawn" inside each world folder in Studio.
+-- Fallback names are tried if WorldSpawn is missing (see WORLD_EXTRA_SPAWN_NAMES).
+-- ============================================
+
+local WORLD_EXTRA_SPAWN_NAMES = {
+	Aviation = { "PilotSpawn", "PilotSpawnLocation", "Trigger", "PilotSeat" },
+	Chef = { "chefspawnlocation", "ChefSpawnLocation", "chefSpawnLocation", "ChefSpawn", "chefspawn" },
+	Medical = { "NurseSpawn", "NurseSpawnLocation", "SpawnLocation" },
+	Cyber = { "CyberSpawn", "LabSpawn", "Camera_LabIntro" },
+}
+
+local function findWorldFolder(worldKey)
+	if worldKey == "Cyber" then
+		local env = workspace:FindFirstChild("Environments")
+		local cyber = env and env:FindFirstChild("Cybersecurity")
+		if cyber then return cyber end
+		return workspace:FindFirstChild("Cybersecurity")
+	end
+	if worldKey == "Aviation" then
+		return workspace:FindFirstChild("PilotWorld")
+			or workspace:FindFirstChild("AviationWorld")
+			or workspace:FindFirstChild("PilotWorld", true)
+			or workspace:FindFirstChild("AviationWorld", true)
+	end
+	if worldKey == "Chef" then
+		return workspace:FindFirstChild("ChefWorld")
+	end
+	if worldKey == "Medical" then
+		return workspace:FindFirstChild("NurseWorld")
+	end
+	return nil
+end
+
+local function spawnObjectToCFrame(obj)
+	if obj:IsA("BasePart") then
+		return obj.CFrame + Vector3.new(0, 3, 0)
+	elseif obj:IsA("Attachment") then
+		return obj.WorldCFrame
+	elseif obj:IsA("Model") then
+		return obj:GetPivot() + Vector3.new(0, 3, 0)
+	end
+	return nil
+end
+
+local function findWorldSpawn(worldKey)
+	local folder = findWorldFolder(worldKey)
+	if not folder then return nil, nil end
+
+	local names = { "WorldSpawn", "CareerSpawn", "PlayerSpawn", "SpawnLocation" }
+	for _, n in ipairs(WORLD_EXTRA_SPAWN_NAMES[worldKey] or {}) do
+		table.insert(names, n)
+	end
+
+	for _, n in ipairs(names) do
+		local found = folder:FindFirstChild(n, true)
+		if found and (found:IsA("BasePart") or found:IsA("Model") or found:IsA("Attachment")) then
+			return found, folder
+		end
+	end
+
+	-- Legacy: Chef spawn markers placed directly under Workspace
+	if worldKey == "Chef" then
+		for _, n in ipairs(WORLD_EXTRA_SPAWN_NAMES.Chef) do
+			local found = workspace:FindFirstChild(n)
+			if found and (found:IsA("BasePart") or found:IsA("Model")) then
+				return found, folder
+			end
+		end
+	end
+
+	return nil, folder
+end
+
+local function snapCharacterToFloor(character, cf)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character }
+	local origin = cf.Position + Vector3.new(0, 3, 0)
+	local result = workspace:Raycast(origin, Vector3.new(0, -400, 0), params)
+	if result then
+		return CFrame.new(result.Position + Vector3.new(0, 4, 0)) * (cf - cf.Position)
+	end
+	return cf
+end
+
+local function teleportPlayerToWorld(worldKey)
+	local character = player.Character or player.CharacterAdded:Wait()
+	local hrp = character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not hrp then
+		warn("PlaySequence: teleportPlayerToWorld - HumanoidRootPart not found for " .. worldKey)
+		return false
+	end
+
+	local spawnObj, folder = findWorldSpawn(worldKey)
+	local cf = spawnObj and spawnObjectToCFrame(spawnObj)
+
+	if not cf and folder then
+		if folder:IsA("Model") then
+			cf = folder:GetPivot() + Vector3.new(0, 10, 0)
+		elseif folder:IsA("BasePart") then
+			cf = folder.CFrame + Vector3.new(0, 10, 0)
+		else
+			local firstPart = folder:FindFirstChildWhichIsA("BasePart", true)
+			if firstPart then
+				cf = firstPart.CFrame + Vector3.new(0, 10, 0)
+			end
+		end
+		warn("PlaySequence: No spawn marker in " .. folder:GetFullName() .. " — using world origin (add a WorldSpawn part)")
+	end
+
+	if not cf then
+		warn("PlaySequence: Could not resolve teleport for " .. worldKey)
+		return false
+	end
+
+	cf = snapCharacterToFloor(character, cf)
+
+	hrp.Anchored = false
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+	hrp.CFrame = cf
+
+	if humanoid then
+		humanoid.Sit = false
+		humanoid.WalkSpeed = 16
+		humanoid.JumpPower = 50
+		humanoid.JumpHeight = 7.2
+	end
+
+	camera.CameraType = Enum.CameraType.Custom
+	if humanoid then
+		camera.CameraSubject = humanoid
+	end
+	player.CameraMode = Enum.CameraMode.Classic
+	player.CameraMinZoomDistance = 0.5
+	player.CameraMaxZoomDistance = 128
+	camera.FieldOfView = 70
+
+	if spawnObj then
+		print("PlaySequence: Teleported to " .. worldKey .. " via " .. spawnObj:GetFullName())
+	else
+		print("PlaySequence: Teleported to " .. worldKey .. " at " .. tostring(cf.Position))
+	end
+	return true
+end
+
 -- START CONTINUOUS LIGHT FLICKER (runs throughout the entire sequence)
 task.spawn(function()
 	local flickerPart = workspace:FindFirstChild("ComputerScienceLightFlicker")
@@ -358,7 +644,7 @@ end)
 task.wait(0.3)
 
 -- ============================================
--- CREATE TUTORIAL GUI LAYER
+-- INSTRUCTIONS (tutorial slides)
 -- ============================================
 
 -- Find the existing black screen from MenuController
@@ -794,14 +1080,18 @@ else
 end
 
 -- ============================================
--- TRANSITION TO CYBERSECURITY LAB
+-- CYBERSECURITY WORLD (Blue theme) - final career
 -- ============================================
+local function runCyberWorld()
+	print("PlaySequence: Starting Cybersecurity finale...")
 
--- Clean up tutorial overlay (black transition screen stays)
-tutorialGui:Destroy()
+	resetSkipForWorld("Cyber")
+	beginWorldTransition("CYBERSECURITY SPECIALIST", "You have been assigned to the school's IT Security Division.", WORLD_COLORS.Cyber)
 
--- Find Camera_LabIntro marker in the Cybersecurity ComputerRoom
-print("PlaySequence: Looking for Camera_LabIntro...")
+	teleportPlayerToWorld("Cyber")
+
+	-- Find Camera_LabIntro marker in the Cybersecurity ComputerRoom
+	print("PlaySequence: Looking for Camera_LabIntro...")
 
 local labIntroMarker = nil
 local environments = workspace:FindFirstChild("Environments")
@@ -1175,8 +1465,15 @@ end)
 -- Start fade from black (runs in background alongside camera movement)
 print("PlaySequence: Revealing cybersecurity lab...")
 
-local blackFrame = transitionGui:FindFirstChild("BlackFrame")
-	or transitionGui:FindFirstChildOfClass("Frame")
+-- Reveal by fading the shared world overlay (the old transition GUI may be gone by now)
+TweenService:Create(
+	worldFadeFrame,
+	TweenInfo.new(LAB_REVEAL_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+	{BackgroundTransparency = 1}
+):Play()
+
+local blackFrame = transitionGui and transitionGui.Parent and (transitionGui:FindFirstChild("BlackFrame")
+	or transitionGui:FindFirstChildOfClass("Frame"))
 
 if blackFrame then
 	local fadeReveal = TweenService:Create(
@@ -1731,13 +2028,12 @@ if mcFirstPerson then
 		end
 	end
 	
-	-- CYBERSECURITY ROLE INTRO (2 seconds each)
-	-- Show skip button for cybersecurity (blue)
+	-- Show skip button for cybersecurity (blue) - the world can now be skipped
 	updateSkipButtonColor("Cyber")
 	setSkipButtonVisible(true)
 	skipTriggered = false
+	GameState:ClearSkip()
 	
-	showTitleCard("CYBERSECURITY SPECIALIST", "You have been assigned to the school's IT Security Division.", 2)
 	showTitleCard("CRITICAL MISSION", "A cyber attack is imminent. Save the school before the entire network shuts down!", 2)
 	
 	-- PASSWORD GAME
@@ -1813,10 +2109,14 @@ if mcFirstPerson then
 	
 	-- If skip was triggered, clean up and skip results screen
 	if skipTriggered then
-		print("PlaySequence: Cybersecurity skipped - proceeding to Chef")
+		print("PlaySequence: Cybersecurity skipped - proceeding to end")
 		hackingBg:Cleanup()
-		-- Keep screen black - the next section (Chef) will handle the fade out after teleport
-		-- skipFadeFrame stays black, worldFadeFrame will be used for Chef section
+		ScreenVideoManager.StopAll(screenVideos)
+		-- Keep screen black for the handoff to Game Complete
+		coverBlack()
+		if skipFadeFrame and skipFadeFrame.Parent then
+			skipFadeFrame.Visible = false
+		end
 	else
 	-- ============================================
 	-- RESULTS SCREEN (only if not skipped)
@@ -2105,121 +2405,25 @@ else
 	warn("PlaySequence: MC_cybersecurity_1 not found!")
 end
 
+	-- Ensure videos are stopped and the screen is black for Game Complete
+	ScreenVideoManager.StopAll(screenVideos)
+	coverBlack()
+
+	-- Record the Cyber average for the end-screen aptitude reveal (0 if skipped).
+	finalScores.Cyber = skipTriggered and 0 or GameState:GetCareerAverage("Cyber")
+end -- end of runCyberWorld
+
 -- ============================================
--- CHEF WORLD TRANSITION (Orange theme) - Second career
+-- CHEF WORLD (Orange theme) - second career
 -- ============================================
+local function runChefWorld()
+	print("PlaySequence: Starting Chef job transition...")
 
-print("PlaySequence: Starting Chef job transition...")
+	resetSkipForWorld("Chef")
+	beginWorldTransition("CHEF SPECIALIST", "You have been assigned to the school's Culinary Division.", WORLD_COLORS.Chef)
+	setSkipButtonVisible(true)
 
--- Reset skip state for Chef section (orange, can skip to Medical)
-skipTriggered = false
-updateSkipButtonColor("Chef")
-setSkipButtonVisible(true)
-
--- Create fade GUI for transitions - ensure solid black first
-local worldFadeGui = Instance.new("ScreenGui")
-worldFadeGui.Name = "WorldTransitionFade"
-worldFadeGui.IgnoreGuiInset = true
-worldFadeGui.DisplayOrder = 900
-worldFadeGui.Parent = playerGui
-
-local worldFadeFrame = Instance.new("Frame")
-worldFadeFrame.Size = UDim2.new(1, 0, 1, 0)
-worldFadeFrame.BackgroundColor3 = Color3.new(0, 0, 0)
-worldFadeFrame.BackgroundTransparency = 0
-worldFadeFrame.BorderSizePixel = 0
-worldFadeFrame.Parent = worldFadeGui
-
--- Now that worldFadeFrame is ready and solid black, hide skipFadeFrame
-if skipFadeFrame and skipFadeFrame.Parent then
-	skipFadeFrame.Visible = false
-end
-
--- Small delay to ensure black screen is visible
-task.wait(0.1)
-
--- TITLE CARD: Chef Specialist
-print("PlaySequence: Showing Chef title card...")
-
-local chefTitleGui1 = Instance.new("ScreenGui")
-chefTitleGui1.Name = "ChefTitleCard1"
-chefTitleGui1.IgnoreGuiInset = true
-chefTitleGui1.DisplayOrder = 910
-chefTitleGui1.Parent = playerGui
-
-local chefTitleBg1 = Instance.new("Frame")
-chefTitleBg1.Size = UDim2.new(1, 0, 1, 0)
-chefTitleBg1.BackgroundTransparency = 1
-chefTitleBg1.BorderSizePixel = 0
-chefTitleBg1.Parent = chefTitleGui1
-
-local chefTitle1 = Instance.new("TextLabel")
-chefTitle1.Size = UDim2.new(1, 0, 0, 80)
-chefTitle1.Position = UDim2.new(0, 0, 0.35, 0)
-chefTitle1.BackgroundTransparency = 1
-chefTitle1.Text = "CHEF SPECIALIST"
-chefTitle1.TextColor3 = Color3.fromRGB(251, 146, 60) -- Orange accent
-chefTitle1.TextSize = 48
-chefTitle1.Font = Enum.Font.GothamBold
-chefTitle1.TextTransparency = 1
-chefTitle1.Parent = chefTitleBg1
-
-local chefSubtitle1 = Instance.new("TextLabel")
-chefSubtitle1.Size = UDim2.new(1, 0, 0, 40)
-chefSubtitle1.Position = UDim2.new(0, 0, 0.45, 0)
-chefSubtitle1.BackgroundTransparency = 1
-chefSubtitle1.Text = "You have been assigned to the school's Culinary Division."
-chefSubtitle1.TextColor3 = Color3.fromRGB(156, 163, 175)
-chefSubtitle1.TextSize = 24
-chefSubtitle1.Font = Enum.Font.GothamMedium
-chefSubtitle1.TextTransparency = 1
-chefSubtitle1.Parent = chefTitleBg1
-
--- Fade in title
-TweenService:Create(chefTitle1, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
-TweenService:Create(chefSubtitle1, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
-
-task.wait(2.5)
-
--- Fade out title
-TweenService:Create(chefTitle1, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
-TweenService:Create(chefSubtitle1, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
-task.wait(0.5)
-
-chefTitleGui1:Destroy()
-
--- Find ChefWorld SpawnLocation - check workspace first, then ChefWorld folder
-local chefWorld1 = workspace:FindFirstChild("ChefWorld")
-local chefSpawn1 = nil
-
--- First check workspace directly for "chefspawnlocation" (case variations)
-chefSpawn1 = workspace:FindFirstChild("chefspawnlocation")
-if not chefSpawn1 then
-	chefSpawn1 = workspace:FindFirstChild("ChefSpawnLocation")
-end
-if not chefSpawn1 then
-	chefSpawn1 = workspace:FindFirstChild("chefSpawnLocation")
-end
-
--- Then check inside ChefWorld folder
-if not chefSpawn1 and chefWorld1 then
-	chefSpawn1 = chefWorld1:FindFirstChild("chefspawnlocation")
-	if not chefSpawn1 then
-		chefSpawn1 = chefWorld1:FindFirstChild("ChefSpawnLocation")
-	end
-	if not chefSpawn1 then
-		chefSpawn1 = chefWorld1:FindFirstChild("SpawnLocation", true)
-	end
-	if not chefSpawn1 then
-		chefSpawn1 = chefWorld1:FindFirstChild("Kitchen", true)
-	end
-end
-
-if chefSpawn1 then
-	print("PlaySequence: Found ChefWorld spawn at: " .. chefSpawn1:GetFullName())
-else
-	warn("PlaySequence: No spawn found for ChefWorld - using fallback position")
-end
+	teleportPlayerToWorld("Chef")
 
 -- Fire ActivateChefWorld RemoteEvent to tell server to start ChefWorld
 -- (Client can't set BoolValue that server can read - must use RemoteEvent)
@@ -2235,51 +2439,6 @@ if chefRemotes then
 else
 	warn("PlaySequence: ChefWorldRemotes folder not found!")
 end
-
--- Ensure player character is loaded before teleporting
-local playerCharacter1 = player.Character or player.CharacterAdded:Wait()
-if not playerCharacter1 then
-	warn("PlaySequence: Waiting for player character to load...")
-	playerCharacter1 = player.CharacterAdded:Wait()
-end
-
--- Calculate spawn position
-local spawnCFrame1 = CFrame.new(0, 10, 0) -- Default fallback
-if chefSpawn1 then
-	if chefSpawn1:IsA("BasePart") then
-		spawnCFrame1 = chefSpawn1.CFrame + Vector3.new(0, 3, 0)
-	elseif chefSpawn1:IsA("Model") then
-		spawnCFrame1 = chefSpawn1:GetPivot() + Vector3.new(0, 3, 0)
-	end
-elseif chefWorld1 then
-	-- Fallback to ChefWorld origin with offset
-	local chefOrigin = chefWorld1:IsA("Model") and chefWorld1:GetPivot() or CFrame.new(0, 0, 0)
-	spawnCFrame1 = chefOrigin + Vector3.new(0, 10, 0)
-end
-
--- Teleport player
-local playerHRP1 = playerCharacter1:FindFirstChild("HumanoidRootPart")
-if playerHRP1 then
-	playerHRP1.CFrame = spawnCFrame1
-	print("PlaySequence: Teleported player to ChefWorld position: " .. tostring(spawnCFrame1.Position))
-else
-	warn("PlaySequence: HumanoidRootPart not found!")
-end
-
--- Set up camera to follow player
-local playerHumanoid1 = playerCharacter1:FindFirstChildOfClass("Humanoid")
-if playerHumanoid1 then
-	camera.CameraSubject = playerHumanoid1
-	camera.CameraType = Enum.CameraType.Custom
-	
-	-- Ensure player can move
-	playerHumanoid1.WalkSpeed = 16
-	playerHumanoid1.JumpPower = 50
-end
-
--- Ensure player camera is set up correctly
-player.CameraMinZoomDistance = 0.5
-player.CameraMaxZoomDistance = 128
 
 -- Fade from black to reveal ChefWorld
 TweenService:Create(worldFadeFrame,
@@ -2346,12 +2505,23 @@ setSkipButtonVisible(false)
 
 -- Handle skip - go directly to Medical without showing results
 if skipTriggered then
-	print("PlaySequence: Chef skipped - transitioning to Medical")
+	print("PlaySequence: Chef skipped - transitioning to next world")
+	-- Tell the server to fully stop ChefWorld so nothing runs in the background
+	local chefRemotesStop = ReplicatedStorage:FindFirstChild("ChefWorldRemotes")
+	if chefRemotesStop then
+		local deactivateRemote = chefRemotesStop:FindFirstChild("DeactivateChefWorld")
+		if deactivateRemote then
+			deactivateRemote:FireServer()
+		end
+	end
 	-- Keep skipFadeFrame black - we'll use worldFadeFrame for the next section
 	-- Ensure worldFadeFrame is also solid black before continuing
+	worldFadeFrame.Visible = true
 	worldFadeFrame.BackgroundTransparency = 0
 	-- Hide skipFadeFrame since worldFadeFrame will handle the fade out
-	skipFadeFrame.Visible = false
+	if skipFadeFrame and skipFadeFrame.Parent then
+		skipFadeFrame.Visible = false
+	end
 	
 	-- Clean up Chef world (with music fade)
 	cleanupChefWorld(true)
@@ -2616,114 +2786,31 @@ cleanupChefWorld(false)
 print("PlaySequence: Cleaned up Chef world after results")
 end -- end of "if not skipTriggered" (ChefWorld results screen)
 
--- ============================================
--- HEALTHCARE / NURSEWORLD TRANSITION (Green theme) - Third and FINAL career
--- ============================================
--- NOTE: Skip button is NOT available in Medical World (last level)
-
--- FINAL safety cleanup of any remaining Chef elements before Medical
-cleanupChefWorld(false)
-print("PlaySequence: Final Chef cleanup complete")
-
-print("PlaySequence: Starting Healthcare job transition...")
-
--- Disable skip button entirely for Medical (last level)
-disableSkipButton()
-
--- Hide skipFadeFrame if visible
-if skipFadeFrame and skipFadeFrame.Parent then
-	skipFadeFrame.Visible = false
-end
-
--- Fade to black for seamless transition
-TweenService:Create(worldFadeFrame,
-	TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-	{BackgroundTransparency = 0}
-):Play()
-task.wait(0.8)
-
--- TITLE CARD: Healthcare Specialist (Green theme)
-print("PlaySequence: Showing Healthcare title card...")
-
-local healthTitleGui2 = Instance.new("ScreenGui")
-healthTitleGui2.Name = "HealthcareTitleCard2"
-healthTitleGui2.IgnoreGuiInset = true
-healthTitleGui2.DisplayOrder = 910
-healthTitleGui2.Parent = playerGui
-
-local healthTitleBg2 = Instance.new("Frame")
-healthTitleBg2.Size = UDim2.new(1, 0, 1, 0)
-healthTitleBg2.BackgroundTransparency = 1
-healthTitleBg2.BorderSizePixel = 0
-healthTitleBg2.Parent = healthTitleGui2
-
-local healthTitle2 = Instance.new("TextLabel")
-healthTitle2.Size = UDim2.new(1, 0, 0, 80)
-healthTitle2.Position = UDim2.new(0, 0, 0.35, 0)
-healthTitle2.BackgroundTransparency = 1
-healthTitle2.Text = "HEALTHCARE SPECIALIST"
-healthTitle2.TextColor3 = Color3.fromRGB(134, 239, 172) -- Green accent
-healthTitle2.TextSize = 48
-healthTitle2.Font = Enum.Font.GothamBold
-healthTitle2.TextTransparency = 1
-healthTitle2.Parent = healthTitleBg2
-
-local healthSubtitle2 = Instance.new("TextLabel")
-healthSubtitle2.Size = UDim2.new(1, 0, 0, 40)
-healthSubtitle2.Position = UDim2.new(0, 0, 0.45, 0)
-healthSubtitle2.BackgroundTransparency = 1
-healthSubtitle2.Text = "You have been assigned to the school's Medical Division."
-healthSubtitle2.TextColor3 = Color3.fromRGB(156, 163, 175)
-healthSubtitle2.TextSize = 24
-healthSubtitle2.Font = Enum.Font.GothamMedium
-healthSubtitle2.TextTransparency = 1
-healthSubtitle2.Parent = healthTitleBg2
-
--- Fade in title
-TweenService:Create(healthTitle2, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
-TweenService:Create(healthSubtitle2, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
-
-task.wait(2.5)
-
--- Fade out title
-TweenService:Create(healthTitle2, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
-TweenService:Create(healthSubtitle2, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
-task.wait(0.5)
-
-healthTitleGui2:Destroy()
-
--- Find NurseWorld SpawnLocation
-local nurseWorld2 = workspace:FindFirstChild("NurseWorld")
-local nurseSpawn2 = nil
-
-if nurseWorld2 then
-	-- Try direct child first
-	nurseSpawn2 = nurseWorld2:FindFirstChild("SpawnLocation")
-	
-	-- If not found, search recursively
-	if not nurseSpawn2 then
-		nurseSpawn2 = nurseWorld2:FindFirstChild("SpawnLocation", true)
-	end
-	
-	-- Try PatientBeds as fallback
-	if not nurseSpawn2 then
-		local beds = nurseWorld2:FindFirstChild("PatientBeds")
-		if beds then
-			local bed1 = beds:FindFirstChild("PatientBed_01")
-			if bed1 then
-				nurseSpawn2 = bed1:FindFirstChild("SpawnLocation") or bed1
-			end
-		end
-	end
-	
-	if nurseSpawn2 then
-		print("PlaySequence: Found NurseWorld spawn at: " .. nurseSpawn2:GetFullName())
-	else
-		warn("PlaySequence: No spawn found in NurseWorld - using NurseWorld origin")
-	end
+-- Record the Chef average for the end-screen aptitude reveal (0 if skipped /
+-- no summary). chefWorldSummary1 is only set when the world actually completes.
+if skipTriggered or not chefWorldSummary1 then
+	finalScores.Chef = 0
 else
-	warn("PlaySequence: NurseWorld not found in Workspace!")
+	local os = chefWorldSummary1.orderScores or {}
+	finalScores.Chef = chefWorldSummary1.finalScore
+		or math.floor(((os[1] or 0) + (os[2] or 0) + (os[3] or 0)) / 3)
 end
+end -- end of runChefWorld
+
+-- ============================================
+-- NURSE / HEALTHCARE WORLD (Green theme) - third career
+-- ============================================
+local function runNurseWorld()
+	print("PlaySequence: Starting Healthcare job transition...")
+
+	-- Safety cleanup of any remaining Chef elements
+	cleanupChefWorld(false)
+
+	resetSkipForWorld("Medical")
+	beginWorldTransition("HEALTHCARE SPECIALIST", "You have been assigned to the school's Medical Division.", WORLD_COLORS.Medical)
+	setSkipButtonVisible(true)
+
+	teleportPlayerToWorld("Medical")
 
 -- Create NurseWorldActive flag so other scripts know NurseWorld is starting
 local nurseActiveFlag2 = ReplicatedStorage:FindFirstChild("NurseWorldActive")
@@ -2734,48 +2821,6 @@ if not nurseActiveFlag2 then
 end
 nurseActiveFlag2.Value = true
 print("PlaySequence: Set NurseWorldActive = true")
-
--- Ensure player character is loaded before teleporting
-local playerCharacter2 = player.Character or player.CharacterAdded:Wait()
-if not playerCharacter2 then
-	warn("PlaySequence: Waiting for player character to load...")
-	playerCharacter2 = player.CharacterAdded:Wait()
-end
-
--- Calculate spawn position
-local nurseSpawnCFrame2 = CFrame.new(0, 10, 0) -- Default fallback
-if nurseSpawn2 then
-	if nurseSpawn2:IsA("BasePart") then
-		nurseSpawnCFrame2 = nurseSpawn2.CFrame + Vector3.new(0, 3, 0)
-	elseif nurseSpawn2:IsA("Model") then
-		nurseSpawnCFrame2 = nurseSpawn2:GetPivot() + Vector3.new(0, 3, 0)
-	end
-elseif nurseWorld2 then
-	local nurseOrigin = nurseWorld2:IsA("Model") and nurseWorld2:GetPivot() or CFrame.new(0, 0, 0)
-	nurseSpawnCFrame2 = nurseOrigin + Vector3.new(0, 10, 0)
-end
-
--- Teleport player
-local playerHRP2 = playerCharacter2:FindFirstChild("HumanoidRootPart")
-if playerHRP2 then
-	playerHRP2.CFrame = nurseSpawnCFrame2
-	print("PlaySequence: Teleported player to NurseWorld at: " .. tostring(nurseSpawnCFrame2.Position))
-else
-	warn("PlaySequence: HumanoidRootPart not found!")
-end
-
--- Set up camera to follow player
-local playerHumanoid2 = playerCharacter2:FindFirstChildOfClass("Humanoid")
-if playerHumanoid2 then
-	camera.CameraSubject = playerHumanoid2
-	camera.CameraType = Enum.CameraType.Custom
-	playerHumanoid2.WalkSpeed = 16
-	playerHumanoid2.JumpPower = 50
-end
-
--- Camera settings for NurseWorld
-player.CameraMinZoomDistance = 0.5
-player.CameraMaxZoomDistance = 128
 
 -- Fade from black to reveal NurseWorld
 TweenService:Create(worldFadeFrame,
@@ -2803,24 +2848,53 @@ if worldCompleted and worldCompleted:IsA("BindableEvent") then
 		end
 	end)
 	
-	-- Wait for NurseWorld to complete (with 10 minute timeout as safety)
+	-- Wait for NurseWorld to complete (with 10 minute timeout as safety) OR skip
 	local nurseMaxWaitTime2 = 600 -- 10 minutes
 	local nurseWaitStartTime2 = tick()
-	while not nurseWorldComplete2 and (tick() - nurseWaitStartTime2) < nurseMaxWaitTime2 do
+	while not nurseWorldComplete2 and not skipTriggered and (tick() - nurseWaitStartTime2) < nurseMaxWaitTime2 do
 		task.wait(0.5)
 	end
 	
-	if not nurseWorldComplete2 then
-		warn("PlaySequence: NurseWorld timed out after 10 minutes - proceeding to end")
+	if skipTriggered then
+		print("PlaySequence: NurseWorld skipped - proceeding to Cyber")
+		nurseConnection2:Disconnect()
+	elseif not nurseWorldComplete2 then
+		warn("PlaySequence: NurseWorld timed out after 10 minutes - proceeding to Cyber")
 		nurseConnection2:Disconnect()
 	end
 else
-	warn("PlaySequence: WorldCompleted BindableEvent not found - waiting 120 seconds as fallback...")
-	task.wait(120)
+	warn("PlaySequence: WorldCompleted BindableEvent not found - waiting up to 120 seconds as fallback...")
+	local nurseFallbackStart2 = tick()
+	while not skipTriggered and (tick() - nurseFallbackStart2) < 120 do
+		task.wait(0.5)
+	end
 end
 
 print("PlaySequence: Healthcare section complete!")
 
+-- Hide skip button before results
+setSkipButtonVisible(false)
+
+-- Tell NurseWorld client/server scripts to stop
+nurseActiveFlag2.Value = false
+
+if skipTriggered then
+	print("PlaySequence: Nurse skipped - tearing down NurseWorld")
+	-- Stop the server-side NurseWorld so nothing keeps running in the background
+	local nurseRemotesStop2 = ReplicatedStorage:FindFirstChild("NurseWorldRemotes")
+	if nurseRemotesStop2 then
+		local stopRemote2 = nurseRemotesStop2:FindFirstChild("StopNurseWorld")
+		if stopRemote2 then
+			stopRemote2:FireServer()
+		end
+	end
+	-- Keep the screen black for the handoff to Cyber
+	worldFadeFrame.Visible = true
+	worldFadeFrame.BackgroundTransparency = 0
+	if skipFadeFrame and skipFadeFrame.Parent then
+		skipFadeFrame.Visible = false
+	end
+else
 -- ============================================
 -- NURSEWORLD RESULTS SCREEN (green medical theme)
 -- ============================================
@@ -3073,30 +3147,829 @@ end)
 while not nurseDismissed2 do
 	task.wait(0.1)
 end
+end -- end of "if not skipTriggered" (NurseWorld results screen)
+
+-- Record the Nurse average for the end-screen aptitude reveal (0 if skipped /
+-- no summary). nurseWorldSummary2 is only set when the world actually completes.
+if skipTriggered or not nurseWorldSummary2 then
+	finalScores.Nurse = 0
+else
+	local r1 = nurseWorldSummary2.room1Score or 0
+	local r2 = nurseWorldSummary2.room2Score or 0
+	local r3 = nurseWorldSummary2.room3Score or 0
+	finalScores.Nurse = nurseWorldSummary2.averageScore or math.floor((r1 + r2 + r3) / 3)
+end
+end -- end of runNurseWorld
 
 -- ============================================
--- GAME COMPLETE
+-- AVIATION WORLD (Sky-blue theme) - first career
+-- ============================================
+local function runAviationWorld()
+	print("PlaySequence: Starting Aviation (Pilot World)...")
+
+	resetSkipForWorld("Aviation")
+	beginWorldTransition("PILOT SPECIALIST", "You have been assigned to the school's Aviation Program.", WORLD_COLORS.Aviation)
+
+	-- The airport (PilotWorld) and the aircraft (PlaneModel) live in Workspace and
+	-- do not sync through Rojo, so resolve PilotWorld by name at runtime. If the
+	-- airport is missing, don't strand the player in the void - just move on.
+	local pilotWorld = workspace:FindFirstChild("PilotWorld") or workspace:FindFirstChild("PilotWorld", true)
+	if not pilotWorld then
+		warn("PlaySequence: PilotWorld not found in Workspace - skipping Aviation")
+		coverBlack()
+		if skipFadeFrame and skipFadeFrame.Parent then skipFadeFrame.Visible = false end
+		return
+	end
+
+	-- Boot the real pilot game. The server engine (PilotServer) is already running;
+	-- requiring PilotUI connects the client UI and fires ClientReady, which makes the
+	-- server offer the pilot tutorial. We grab PilotUIBase to drive/await completion.
+	local pilotOK, pilotBase = pcall(function()
+		local folder = script.Parent:WaitForChild("Pilot", 10)
+		require(folder:WaitForChild("PilotUI"))          -- loader: boots Base + Tasks + Handlers
+		return require(folder:WaitForChild("PilotUIBase"))
+	end)
+	if not pilotOK or type(pilotBase) ~= "table" then
+		warn("PlaySequence: Failed to load pilot modules - skipping Aviation:", pilotBase)
+		coverBlack()
+		if skipFadeFrame and skipFadeFrame.Parent then skipFadeFrame.Visible = false end
+		return
+	end
+
+	pilotBase.active = true
+	pilotBase.aborted = false
+	pilotBase.finished = false
+
+	teleportPlayerToWorld("Aviation")
+
+	-- Reveal the world so the pilot's tutorial / cinematic is visible, and let the
+	-- player skip the whole world at any time with [X] or the skip button.
+	setSkipButtonVisible(true)
+	revealWorld(0.8)
+
+	-- Wait until the player finishes the flight debrief (CONTINUE) or skips.
+	while not pilotBase.finished and not skipTriggered do
+		task.wait(0.1)
+	end
+
+	setSkipButtonVisible(false)
+
+	-- Halt the server-side pilot flow no matter how we leave, and stop the client
+	-- loops, so nothing from Aviation keeps running once we hand off to Chef.
+	pilotBase.aborted = true
+	local pilotRemotes = ReplicatedStorage:FindFirstChild("PilotRemotes")
+	local stopRemote = pilotRemotes and pilotRemotes:FindFirstChild("StopAviation")
+	if stopRemote then
+		stopRemote:FireServer()
+	end
+
+	-- Cover the screen, then tear the pilot UI down behind black. (On a skip the
+	-- skip overlay is already black; on a normal finish we fade to black first.)
+	if not skipTriggered then
+		worldFadeFrame.Visible = true
+		TweenService:Create(worldFadeFrame, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {BackgroundTransparency = 0}):Play()
+		task.wait(0.6)
+	end
+	worldFadeFrame.Visible = true
+	worldFadeFrame.BackgroundTransparency = 0
+
+	if pilotBase.teardown then
+		pcall(pilotBase.teardown)
+	end
+
+	if skipTriggered then
+		print("PlaySequence: Aviation skipped - proceeding to Chef")
+	end
+	if skipFadeFrame and skipFadeFrame.Parent then
+		skipFadeFrame.Visible = false
+	end
+	coverBlack()
+
+	-- Record the Aviation average for the end-screen aptitude reveal (0 if skipped).
+	finalScores.Aviation = skipTriggered and 0 or GameState:GetCareerAverage("Aviation")
+	print("PlaySequence: Aviation complete")
+end
+
+-- ============================================
+-- MAIN GAME FLOW
+-- Instructions (above) -> Aviation -> Chef -> Nurse -> Cyber
+-- ============================================
+runAviationWorld()
+runChefWorld()
+runNurseWorld()
+runCyberWorld()
+
+-- ============================================
+-- GAME COMPLETE - APTITUDE REVEAL END SCREEN
+-- A bright flash transitions into a 3D room (built in Studio as "EndRoom") where
+-- a center platform sinks into the floor and rises carrying the pedestal of the
+-- player's best-fit career, then the screen blurs into a "Try Again?" menu.
 -- ============================================
 
--- Fade to black (game end)
-TweenService:Create(worldFadeFrame,
-	TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-	{BackgroundTransparency = 0}
-):Play()
-task.wait(1.5)
+-- Career display config -------------------------------------------------------
+-- The order here is also the tie-break priority (earlier wins ties).
+local CAREER_ORDER = { "Aviation", "Chef", "Nurse", "Cyber" }
+local CAREER_DISPLAY = {
+	Aviation = "PILOT",
+	Chef = "CHEF",
+	Nurse = "NURSE",
+	Cyber = "CYBERSECURITY SPECIALIST",
+}
+local CAREER_TAGLINE = {
+	Aviation = "Your future is in the skies.",
+	Chef = "Your future is in the kitchen.",
+	Nurse = "Your future is in healthcare.",
+	Cyber = "Your future is in cyber defense.",
+}
+local CAREER_ACCENT = {
+	Aviation = WORLD_COLORS.Aviation,
+	Chef = WORLD_COLORS.Chef,
+	Nurse = WORLD_COLORS.Medical,
+	Cyber = WORLD_COLORS.Cyber,
+}
+-- Friendly world names used in the tie / all-skipped messages.
+local CAREER_SHORT = {
+	Aviation = "Aviation",
+	Chef = "Chef",
+	Nurse = "Nursing",
+	Cyber = "Cybersecurity",
+}
 
--- Show "Game Complete" text
-local gameCompleteLabel = Instance.new("TextLabel")
-gameCompleteLabel.Size = UDim2.new(1, 0, 0, 60)
-gameCompleteLabel.Position = UDim2.new(0, 0, 0.45, 0)
-gameCompleteLabel.BackgroundTransparency = 1
-gameCompleteLabel.Text = "CONGRATULATIONS - YOU HAVE AWAKENED"
-gameCompleteLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-gameCompleteLabel.TextSize = 36
-gameCompleteLabel.Font = Enum.Font.GothamBold
-gameCompleteLabel.TextTransparency = 1
-gameCompleteLabel.Parent = worldFadeGui
+-- Analyze the four scores. Returns:
+--   winnerKey  - the best career (first by CAREER_ORDER priority among ties)
+--   bestScore  - the top score
+--   tiedKeys   - every career sharing the top score (length >= 2 means a tie)
+--   allZero    - true when nobody scored above 0 (e.g. all worlds skipped)
+local function analyzeResults(scores)
+	local bestScore = -1
+	for _, key in ipairs(CAREER_ORDER) do
+		local s = scores[key] or 0
+		if s > bestScore then bestScore = s end
+	end
+	local tiedKeys = {}
+	for _, key in ipairs(CAREER_ORDER) do
+		if (scores[key] or 0) == bestScore then
+			table.insert(tiedKeys, key)
+		end
+	end
+	return tiedKeys[1], bestScore, tiedKeys, (bestScore <= 0)
+end
 
-TweenService:Create(gameCompleteLabel, TweenInfo.new(1.0), {TextTransparency = 0}):Play()
+-- Join career names into natural language: "A", "A and B", or "A, B, and C".
+local function joinCareerNames(keys)
+	local names = {}
+	for _, k in ipairs(keys) do
+		table.insert(names, CAREER_SHORT[k] or k)
+	end
+	if #names <= 1 then return names[1] or "" end
+	if #names == 2 then return names[1] .. " and " .. names[2] end
+	local last = table.remove(names)
+	return table.concat(names, ", ") .. ", and " .. last
+end
 
-print("=== PlaySequence complete - Game finished! ===")
+-- Smoothly interpolate a PVInstance's pivot (works for Models and BaseParts,
+-- anchored or not - no welding needed).
+local function tweenPivot(inst, goalCF, duration)
+	local startCF = inst:GetPivot()
+	local elapsed = 0
+	while elapsed < duration do
+		local dt = RunService.Heartbeat:Wait()
+		elapsed = math.min(elapsed + dt, duration)
+		local a = elapsed / duration
+		a = a * a * (3 - 2 * a) -- smoothstep easing
+		inst:PivotTo(startCF:Lerp(goalCF, a))
+	end
+	inst:PivotTo(goalCF)
+end
+
+-- Raise the platform and the cloned pedestal together in lockstep.
+local function raiseTogether(platform, platFrom, platTo, pedestal, pedFrom, pedTo, duration)
+	local elapsed = 0
+	while elapsed < duration do
+		local dt = RunService.Heartbeat:Wait()
+		elapsed = math.min(elapsed + dt, duration)
+		local a = elapsed / duration
+		a = a * a * (3 - 2 * a)
+		platform:PivotTo(platFrom:Lerp(platTo, a))
+		pedestal:PivotTo(pedFrom:Lerp(pedTo, a))
+	end
+	platform:PivotTo(platTo)
+	pedestal:PivotTo(pedTo)
+end
+
+-- World-space top-center point of a Model or BasePart.
+local function topCenterOf(inst)
+	local cf, size
+	if inst:IsA("Model") then
+		cf, size = inst:GetBoundingBox()
+	else
+		cf, size = inst.CFrame, inst.Size
+	end
+	return cf.Position + Vector3.new(0, size.Y / 2, 0)
+end
+
+-- Vertical distance from a model's pivot to the bottom of its bounding box, so we
+-- can rest its base on a surface.
+local function pivotToBottom(model)
+	local cf, size = model:GetBoundingBox()
+	return model:GetPivot().Position.Y - (cf.Position.Y - size.Y / 2)
+end
+
+-- Fallback camera framing used when no usable CamPos marker exists. Stays INSIDE
+-- the room at roughly eye level (a touch above the reveal target) and looks straight
+-- at it — never floating above the box. The horizontal viewing direction is chosen
+-- as the most "open" of the platform's four sides (the one whose camera spot is
+-- farthest from any pedestal), so we don't sit on top of a decorative pedestal.
+local function computeFallbackCam(pedFolder, platform, focusPos)
+	-- Pedestal positions (for the openness test) + horizontal spread (for distance).
+	local pedPositions = {}
+	for _, ped in ipairs(pedFolder:GetChildren()) do
+		if ped:IsA("Model") or ped:IsA("BasePart") then
+			table.insert(pedPositions, ped:GetPivot().Position)
+		end
+	end
+
+	local minV, maxV
+	for _, d in ipairs(pedFolder:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local lo = d.Position - d.Size * 0.5
+			local hi = d.Position + d.Size * 0.5
+			if not minV then
+				minV, maxV = lo, hi
+			else
+				minV = Vector3.new(math.min(minV.X, lo.X), math.min(minV.Y, lo.Y), math.min(minV.Z, lo.Z))
+				maxV = Vector3.new(math.max(maxV.X, hi.X), math.max(maxV.Y, hi.Y), math.max(maxV.Z, hi.Z))
+			end
+		end
+	end
+
+	local focus = focusPos
+	if not focus then
+		focus = minV and ((minV + maxV) * 0.5) or Vector3.zero
+	end
+
+	local horizRadius = 18
+	if minV then
+		horizRadius = math.max(maxV.X - minV.X, maxV.Z - minV.Z) * 0.5
+	end
+	-- Keep the pull-back modest so the camera stays inside a normal-sized room.
+	local dist = math.clamp(horizRadius * 1.3 + 8, 14, 30)
+
+	-- Candidate horizontal directions: the platform's own axes if we have it.
+	local axes
+	if platform and platform:IsA("BasePart") then
+		local cf = platform.CFrame
+		local f = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+		local r = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+		f = (f.Magnitude > 0.05) and f.Unit or Vector3.new(0, 0, 1)
+		r = (r.Magnitude > 0.05) and r.Unit or Vector3.new(1, 0, 0)
+		axes = { f, -f, r, -r }
+	else
+		axes = { Vector3.new(0, 0, 1), Vector3.new(0, 0, -1), Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0) }
+	end
+
+	-- Pick the direction whose camera spot is farthest from any pedestal (most open).
+	local bestDir, bestClear = axes[1], -1
+	for _, dir in ipairs(axes) do
+		local camP = focus + dir * dist
+		local nearest = math.huge
+		for _, pp in ipairs(pedPositions) do
+			local flat = Vector3.new(pp.X - camP.X, 0, pp.Z - camP.Z).Magnitude
+			if flat < nearest then nearest = flat end
+		end
+		if nearest > bestClear then
+			bestClear, bestDir = nearest, dir
+		end
+	end
+
+	local eye = focus + bestDir * dist + Vector3.new(0, 5, 0)
+	return CFrame.lookAt(eye, focus)
+end
+
+-- Tolerant name matching for the Studio-built room: ignores case and any spaces,
+-- underscores or hyphens, so "RevealPlatform", "reveal platform" and
+-- "Reveal_Platform" all resolve. Searches the whole subtree.
+local function normName(s)
+	return (string.lower(s):gsub("[%s_%-]", ""))
+end
+
+local function resolveChild(root, ...)
+	if not root then return nil end
+	local candidates = { ... }
+	-- 1. exact recursive match (fast path)
+	for _, name in ipairs(candidates) do
+		local hit = root:FindFirstChild(name, true)
+		if hit then return hit end
+	end
+	-- 2. normalized match across the whole subtree (catches case/space/underscore typos)
+	local wanted = {}
+	for _, name in ipairs(candidates) do wanted[normName(name)] = true end
+	for _, d in ipairs(root:GetDescendants()) do
+		if wanted[normName(d.Name)] then return d end
+	end
+	return nil
+end
+
+-- Score how "complete" an EndRoom candidate is, so we can pick the right one when
+-- the place contains more than one object named EndRoom (a leftover/duplicate that
+-- is missing parts would otherwise win just by being first in child order).
+local function roomScore(room)
+	local s = 0
+	if resolveChild(room, "Pedestals") then s += 1 end
+	if resolveChild(room, "RevealPlatform", "Platform") then s += 1 end
+	if resolveChild(room, "CamPos", "CameraPos") then s += 1 end
+	if resolveChild(room, "RevealSpot", "RevealPoint") then s += 1 end
+	return s
+end
+
+-- Find every Model/Folder named "EndRoom" anywhere in Workspace and return the most
+-- complete one (plus the total candidate count for diagnostics).
+local function findBestEndRoom()
+	local best, bestScore, count = nil, -1, 0
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if (d:IsA("Model") or d:IsA("Folder")) and normName(d.Name) == "endroom" then
+			count += 1
+			local s = roomScore(d)
+			if s > bestScore then best, bestScore = d, s end
+		end
+	end
+	return best, count
+end
+
+-- Find the EndRoom (built in Studio). It does not sync through Rojo, so resolve
+-- it by name at runtime. Lookups are tolerant of case/space/underscore differences,
+-- and we pick the most complete EndRoom in case a partial duplicate exists.
+local endRoom, endRoomCount = findBestEndRoom()
+if endRoom then
+	print("PlaySequence: Using EndRoom at " .. endRoom:GetFullName() .. " (" .. tostring(endRoomCount) .. " candidate(s) found)")
+end
+if endRoomCount and endRoomCount > 1 then
+	warn("PlaySequence: Found " .. endRoomCount .. " objects named 'EndRoom' - using the most complete one. Delete the leftover/duplicate to avoid confusion.")
+end
+-- Resolve the parts inside the chosen room; if they live outside it (e.g. as
+-- siblings in Workspace), fall back to a workspace-wide search by their unique name.
+local camPos = resolveChild(endRoom, "CamPos", "CameraPos") or resolveChild(workspace, "CamPos")
+local pedestalsFolder = resolveChild(endRoom, "Pedestals") or resolveChild(workspace, "Pedestals")
+local revealPlatform = resolveChild(endRoom, "RevealPlatform", "Platform") or resolveChild(workspace, "RevealPlatform")
+
+local winnerKey, winnerScore, tiedKeys, allZero = analyzeResults(finalScores)
+local isTie = (#tiedKeys >= 2) and not allZero
+print(string.format(
+	"PlaySequence: Final scores - Aviation:%d Chef:%d Nurse:%d Cyber:%d  =>  Winner: %s (%d)%s",
+	finalScores.Aviation, finalScores.Chef, finalScores.Nurse, finalScores.Cyber, winnerKey, winnerScore,
+	allZero and "  [ALL SKIPPED]" or (isTie and ("  [TIE: " .. joinCareerNames(tiedKeys) .. "]") or "")
+))
+
+-- Per-piece diagnostics so a missing/misnamed instance is obvious in Output.
+-- Only EndRoom + Pedestals are strictly required; RevealPlatform and CamPos are
+-- optional (the reveal degrades gracefully without them).
+if not endRoom then warn("PlaySequence: EndRoom not found in Workspace - using simple text ending") end
+if endRoom and not pedestalsFolder then warn("PlaySequence: EndRoom has no 'Pedestals' folder - using simple text ending") end
+if endRoom and not revealPlatform then warn("PlaySequence: EndRoom has no 'RevealPlatform' - the winning pedestal will rise on its own (check the part's exact name)") end
+if endRoom and not camPos then warn("PlaySequence: EndRoom has no 'CamPos' part - computing a camera angle automatically (add a CamPos part for exact framing)") end
+
+-- If something required/expected is missing, dump the chosen EndRoom's full path and
+-- its child names so the real (possibly misspelled / wrong-room) names are visible.
+if endRoom and (not pedestalsFolder or not revealPlatform or not camPos) then
+	local names = {}
+	for _, c in ipairs(endRoom:GetChildren()) do
+		table.insert(names, c.Name .. " [" .. c.ClassName .. "]")
+	end
+	warn("PlaySequence: Using EndRoom at " .. endRoom:GetFullName() .. " | children = { " .. table.concat(names, ", ") .. " }")
+end
+
+-- The reveal needs the room and the pedestals folder. CamPos, RevealPlatform and
+-- the winning pedestal are all resolved defensively below.
+local hasRoom = endRoom ~= nil and pedestalsFolder ~= nil
+
+if hasRoom then
+	-- ========== 1. BRIGHT FLASH ==========
+	-- Screen is currently solid black (cyber world ended with coverBlack). Brighten
+	-- it to white ("shines bright"), then we set up the camera behind the flash.
+	worldFadeGui.DisplayOrder = 960
+	worldFadeFrame.Visible = true
+	worldFadeFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+	worldFadeFrame.BackgroundTransparency = 0
+	TweenService:Create(worldFadeFrame,
+		TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+		{ BackgroundColor3 = Color3.new(1, 1, 1) }
+	):Play()
+	task.wait(0.7)
+
+	-- ========== 2. STREAM IN THE ROOM, LOCK CHARACTER, PLACE CAMERA ==========
+	local character = player.Character
+	local hrp = character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+	-- The EndRoom is far from where the player finishes (the cyber lab). With
+	-- StreamingEnabled the room's BaseParts (CamPos/RevealSpot/RevealPlatform and the
+	-- pedestal toppers) are NOT loaded on the client until the player is near it,
+	-- which is why they resolved as "none" and the camera framed empty city/skybox.
+	-- Move the character into the room and request streaming, then wait for the parts
+	-- to load. (Safe no-op when streaming is off / parts are already present.)
+	-- Derive the room position from the pedestal models, whose pivots replicate even
+	-- when their parts are streamed out. Works whether EndRoom is a Model or Folder.
+	local roomPos
+	do
+		if endRoom:IsA("Model") then
+			local ok, cf = pcall(function() return endRoom:GetPivot() end)
+			if ok then roomPos = cf.Position end
+		end
+		if not roomPos then
+			local sum, n = Vector3.zero, 0
+			for _, ped in ipairs(pedestalsFolder:GetChildren()) do
+				if ped:IsA("Model") or ped:IsA("BasePart") then sum += ped:GetPivot().Position; n += 1 end
+			end
+			roomPos = (n > 0) and (sum / n) or Vector3.zero
+		end
+	end
+	if hrp then
+		hrp.CFrame = CFrame.new(roomPos + Vector3.new(0, 8, 0))
+	end
+	-- Point the camera at the room now (screen is white) so streaming, which follows
+	-- the local player's character AND camera, loads this area.
+	camera.CameraType = Enum.CameraType.Scriptable
+	camera.CFrame = CFrame.lookAt(roomPos + Vector3.new(0, 12, 34), roomPos)
+	pcall(function()
+		player:RequestStreamingAround(roomPos)
+	end)
+	local streamStart = os.clock()
+	repeat
+		camPos = camPos or resolveChild(endRoom, "CamPos", "CameraPos") or resolveChild(workspace, "CamPos")
+		revealPlatform = revealPlatform or resolveChild(endRoom, "RevealPlatform", "Platform") or resolveChild(workspace, "RevealPlatform")
+		-- Best case: CamPos loaded (EndRoom persistent) -> proceed instantly.
+		if camPos then break end
+		-- If the in-room parts are loaded but CamPos still isn't after a moment, it
+		-- likely sits outside the stream radius or doesn't exist; stop waiting and use
+		-- the auto-framed camera instead of stalling on a white screen.
+		if revealPlatform and (os.clock() - streamStart) > 2.5 then break end
+		task.wait(0.2)
+	until (os.clock() - streamStart) > 5
+	print(string.format("PlaySequence: After streaming - camPos=%s platform=%s",
+		camPos and "found" or "none", revealPlatform and "found" or "none"))
+
+	if humanoid then
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
+		humanoid.JumpHeight = 0
+	end
+	if hrp then
+		hrp.Anchored = true
+	end
+
+	-- Where the reveal happens (the winning pedestal's resting spot). Resolved up
+	-- front so the camera can AIM at it. Priority: RevealSpot > platform top >
+	-- center of the pedestals.
+	local revealSpot = resolveChild(endRoom, "RevealSpot", "RevealPoint") or resolveChild(workspace, "RevealSpot")
+	local revealTarget
+	if revealSpot then
+		revealTarget = revealSpot.Position + Vector3.new(0, 3, 0)
+	elseif revealPlatform then
+		revealTarget = topCenterOf(revealPlatform) + Vector3.new(0, 3, 0)
+	else
+		local sum, n = Vector3.zero, 0
+		for _, ped in ipairs(pedestalsFolder:GetChildren()) do
+			if ped:IsA("Model") or ped:IsA("BasePart") then sum += ped:GetPivot().Position; n += 1 end
+		end
+		revealTarget = (n > 0 and (sum / n) or Vector3.zero) + Vector3.new(0, 3, 0)
+	end
+
+	camera.CameraType = Enum.CameraType.Scriptable
+	camera.FieldOfView = 60
+	-- Always look at the reveal target. Use the hand-placed CamPos only for the
+	-- vantage point (its orientation is ignored, so a mis-aimed CamPos can't make
+	-- us stare at a wall). If CamPos is missing or sitting on top of the target,
+	-- compute a sensible framing instead.
+	if camPos and (camPos.Position - revealTarget).Magnitude > 2 then
+		camera.CFrame = CFrame.lookAt(camPos.Position, revealTarget)
+	else
+		camera.CFrame = computeFallbackCam(pedestalsFolder, revealPlatform, revealTarget)
+	end
+	print(string.format(
+		"PlaySequence: End camera pos=%s -> target=%s | camPos=%s | revealSpot=%s | platform=%s",
+		tostring(camera.CFrame.Position), tostring(revealTarget),
+		camPos and camPos:GetFullName() or "none",
+		revealSpot and revealSpot:GetFullName() or "none",
+		revealPlatform and revealPlatform:GetFullName() or "none"
+	))
+	task.wait(0.3)
+
+	-- ========== 3. REVEAL THE ROOM (flash slowly returns to normal) ==========
+	TweenService:Create(worldFadeFrame,
+		TweenInfo.new(1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ BackgroundTransparency = 1 }
+	):Play()
+	-- Gentle push-in for cinematic feel.
+	TweenService:Create(camera, TweenInfo.new(3.0, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ FieldOfView = 55 }):Play()
+	task.wait(1.4)
+
+	-- Intro caption while the player takes in the room.
+	local endGui = Instance.new("ScreenGui")
+	endGui.Name = "AptitudeRevealUI"
+	endGui.IgnoreGuiInset = true
+	endGui.DisplayOrder = 970
+	endGui.ResetOnSpawn = false
+	endGui.Parent = playerGui
+
+	local caption = Instance.new("TextLabel")
+	caption.Size = UDim2.new(1, 0, 0, 50)
+	caption.Position = UDim2.new(0, 0, 0.12, 0)
+	caption.BackgroundTransparency = 1
+	caption.Text = "ANALYZING YOUR APTITUDE..."
+	caption.TextColor3 = Color3.fromRGB(235, 240, 255)
+	caption.TextSize = 30
+	caption.Font = Enum.Font.GothamBold
+	caption.TextTransparency = 1
+	caption.Parent = endGui
+	TweenService:Create(caption, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
+
+	-- ========== 4. AUTO TRIGGER AFTER ~2s ==========
+	task.wait(2.0)
+
+	-- ========== 5. REVEAL ANIMATION ==========
+	-- With a center platform: it sinks into the floor, then (for a single winner)
+	-- rises carrying a clone of that career's pedestal, or rises empty for a tie /
+	-- all-skipped run. Without a platform we still raise the winning pedestal from
+	-- below, so the reveal works even if the platform part is missing/misnamed.
+	local SINK_DEPTH = 16
+	-- (revealSpot was resolved above, near the camera setup.)
+
+	-- Platform motion (only if a platform exists): sink it first.
+	local platStart, platDown, platTopRest
+	if revealPlatform then
+		platStart = revealPlatform:GetPivot()
+		platDown = platStart * CFrame.new(0, -SINK_DEPTH, 0)
+		-- Capture the resting top surface BEFORE sinking, so the no-marker fallback
+		-- rests the pedestal at the correct height (not the sunken height).
+		platTopRest = topCenterOf(revealPlatform)
+		tweenPivot(revealPlatform, platDown, 0.9)
+		task.wait(0.15)
+	end
+
+	local sourcePedestal = (not allZero and not isTie)
+		and pedestalsFolder:FindFirstChild("Pedestal_" .. winnerKey) or nil
+	if (not allZero and not isTie) and not sourcePedestal then
+		warn("PlaySequence: Pedestal_" .. tostring(winnerKey) .. " not found in Pedestals - revealing without a crowned pedestal")
+	end
+
+	if sourcePedestal then
+		-- Clone the winning pedestal below its rest spot and raise it into view.
+		local clone = sourcePedestal:Clone()
+		for _, d in ipairs(clone:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Anchored = true
+				d.CanCollide = false
+			end
+		end
+
+		-- Resting CFrame priority: RevealSpot marker > platform top surface > a spot
+		-- in front of the camera as a last resort.
+		local pedRestCF
+		if revealSpot then
+			pedRestCF = revealSpot.CFrame
+		elseif platTopRest then
+			clone:PivotTo(CFrame.new(platTopRest)) -- temp place to measure base offset
+			local restY = platTopRest.Y + pivotToBottom(clone)
+			pedRestCF = CFrame.new(platTopRest.X, restY, platTopRest.Z)
+		else
+			local camCF = camera.CFrame
+			pedRestCF = CFrame.new(camCF.Position + camCF.LookVector * 18 - Vector3.new(0, 3, 0))
+		end
+		local pedDownCF = pedRestCF * CFrame.new(0, -SINK_DEPTH, 0)
+
+		clone:PivotTo(pedDownCF)
+		clone.Parent = endRoom
+
+		if revealPlatform then
+			-- Raise platform + pedestal together back to floor level.
+			raiseTogether(revealPlatform, platDown, platStart, clone, pedDownCF, pedRestCF, 1.2)
+		else
+			-- No platform: raise the pedestal on its own.
+			tweenPivot(clone, pedRestCF, 1.2)
+		end
+	else
+		-- Tie or all-skipped: nothing to crown. Raise the empty platform back up (or
+		-- just hold a beat if there is no platform). The result text explains why.
+		if revealPlatform then
+			task.wait(0.4)
+			tweenPivot(revealPlatform, platStart, 1.2)
+		else
+			task.wait(0.8)
+		end
+	end
+
+	-- ========== 6. RESULT TEXT ==========
+	-- Accent: career color for a winner, warm gold for a tie, neutral for all-skipped.
+	local accent
+	if allZero then
+		accent = Color3.fromRGB(225, 230, 240)
+	elseif isTie then
+		accent = Color3.fromRGB(250, 210, 120)
+	else
+		accent = CAREER_ACCENT[winnerKey] or Color3.fromRGB(235, 240, 255)
+	end
+
+	TweenService:Create(caption, TweenInfo.new(0.4), { TextTransparency = 1 }):Play()
+	task.wait(0.4)
+
+	-- Headline (career name / tie / inconclusive).
+	local headline = Instance.new("TextLabel")
+	headline.Size = UDim2.new(1, -80, 0, 80)
+	headline.Position = UDim2.new(0, 40, 0.12, 44)
+	headline.BackgroundTransparency = 1
+	headline.TextWrapped = true
+	headline.TextColor3 = accent
+	headline.Font = Enum.Font.GothamBlack
+	headline.TextTransparency = 1
+	headline.Parent = endGui
+
+	-- Sub line (tagline + score / "play again" prompt).
+	local sub = Instance.new("TextLabel")
+	sub.Size = UDim2.new(1, -120, 0, 70)
+	sub.Position = UDim2.new(0, 60, 0.12, 128)
+	sub.BackgroundTransparency = 1
+	sub.TextWrapped = true
+	sub.TextColor3 = Color3.fromRGB(185, 195, 215)
+	sub.Font = Enum.Font.GothamMedium
+	sub.TextTransparency = 1
+	sub.Parent = endGui
+
+	if allZero then
+		caption.Text = "INCONCLUSIVE"
+		headline.Text = "We can't decide what career is best if you didn't do any of them!"
+		headline.TextSize = 32
+		sub.Text = "Play again and actually take on the careers to find your best fit."
+		sub.TextSize = 20
+	elseif isTie then
+		caption.Text = "IT'S A TIE!"
+		headline.Text = "You were tied between " .. joinCareerNames(tiedKeys) .. "!"
+		headline.TextSize = 36
+		sub.Text = "Play again to see exactly which career you would be better at!"
+		sub.TextSize = 20
+	else
+		caption.Text = "YOU ARE MOST SUITED TO BE A"
+		headline.Text = CAREER_DISPLAY[winnerKey] or winnerKey
+		headline.TextSize = 52
+		sub.Text = (CAREER_TAGLINE[winnerKey] or "") .. "   (" .. tostring(winnerScore) .. "/100)"
+		sub.TextSize = 20
+	end
+
+	caption.TextSize = 24
+	caption.TextColor3 = Color3.fromRGB(210, 218, 235)
+	TweenService:Create(caption, TweenInfo.new(0.5), { TextTransparency = 0 }):Play()
+	TweenService:Create(headline, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
+	task.delay(0.3, function()
+		TweenService:Create(sub, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
+	end)
+
+	-- ========== 7. HOLD, THEN BLUR + "TRY AGAIN?" MENU ==========
+	task.wait(4.0)
+
+	local endBlur = Lighting:FindFirstChild("EndScreenBlur")
+	if not endBlur then
+		endBlur = Instance.new("BlurEffect")
+		endBlur.Name = "EndScreenBlur"
+		endBlur.Size = 0
+		endBlur.Parent = Lighting
+	end
+	TweenService:Create(endBlur, TweenInfo.new(0.8), { Size = 24 }):Play()
+
+	-- Fade the result text out so the menu is the focus.
+	for _, lbl in ipairs({ caption, headline, sub }) do
+		TweenService:Create(lbl, TweenInfo.new(0.6), { TextTransparency = 1 }):Play()
+	end
+	task.wait(0.6)
+
+	-- Menu panel
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.new(0, 460, 0, 280)
+	panel.Position = UDim2.new(0.5, -230, 0.5, -140)
+	panel.BackgroundColor3 = Color3.fromRGB(18, 22, 34)
+	panel.BackgroundTransparency = 1
+	panel.Parent = endGui
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 18)
+	panelCorner.Parent = panel
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Color = accent
+	panelStroke.Thickness = 2
+	panelStroke.Transparency = 1
+	panelStroke.Parent = panel
+
+	local panelTitle = Instance.new("TextLabel")
+	panelTitle.Size = UDim2.new(1, -40, 0, 50)
+	panelTitle.Position = UDim2.new(0, 20, 0, 36)
+	panelTitle.BackgroundTransparency = 1
+	panelTitle.Text = allZero and "HOLD ON..." or (isTie and "SO CLOSE!" or "CONGRATULATIONS")
+	panelTitle.TextColor3 = Color3.fromRGB(245, 248, 255)
+	panelTitle.TextSize = 30
+	panelTitle.Font = Enum.Font.GothamBlack
+	panelTitle.TextTransparency = 1
+	panelTitle.Parent = panel
+
+	local panelSub = Instance.new("TextLabel")
+	panelSub.Size = UDim2.new(1, -60, 0, 60)
+	panelSub.Position = UDim2.new(0, 30, 0, 92)
+	panelSub.BackgroundTransparency = 1
+	panelSub.TextWrapped = true
+	if allZero then
+		panelSub.Text = "You skipped every career, so there's nothing to compare. Play again and give them a real shot!"
+	elseif isTie then
+		panelSub.Text = "It was a tie between " .. joinCareerNames(tiedKeys) .. ". Play again to break the tie!"
+	else
+		panelSub.Text = "You explored four careers and found your best fit: "
+			.. (CAREER_DISPLAY[winnerKey] or winnerKey) .. "."
+	end
+	panelSub.TextColor3 = Color3.fromRGB(185, 195, 215)
+	panelSub.TextSize = 18
+	panelSub.Font = Enum.Font.GothamMedium
+	panelSub.TextTransparency = 1
+	panelSub.Parent = panel
+
+	local tryAgainBtn = Instance.new("TextButton")
+	tryAgainBtn.Size = UDim2.new(0, 260, 0, 56)
+	tryAgainBtn.Position = UDim2.new(0.5, -130, 1, -84)
+	tryAgainBtn.BackgroundColor3 = accent
+	tryAgainBtn.BackgroundTransparency = 1
+	tryAgainBtn.Text = "TRY AGAIN"
+	tryAgainBtn.TextColor3 = Color3.fromRGB(15, 18, 28)
+	tryAgainBtn.TextSize = 22
+	tryAgainBtn.Font = Enum.Font.GothamBold
+	tryAgainBtn.TextTransparency = 1
+	tryAgainBtn.AutoButtonColor = true
+	tryAgainBtn.Parent = panel
+	local btnCorner = Instance.new("UICorner")
+	btnCorner.CornerRadius = UDim.new(0, 12)
+	btnCorner.Parent = tryAgainBtn
+
+	-- Animate the menu in.
+	TweenService:Create(panel, TweenInfo.new(0.5), { BackgroundTransparency = 0.05 }):Play()
+	TweenService:Create(panelStroke, TweenInfo.new(0.5), { Transparency = 0 }):Play()
+	TweenService:Create(panelTitle, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
+	TweenService:Create(panelSub, TweenInfo.new(0.6), { TextTransparency = 0 }):Play()
+	TweenService:Create(tryAgainBtn, TweenInfo.new(0.6), { TextTransparency = 0, BackgroundTransparency = 0 }):Play()
+
+	local restarting = false
+	tryAgainBtn.MouseButton1Click:Connect(function()
+		if restarting then return end
+		restarting = true
+		tryAgainBtn.Text = "RESTARTING..."
+		-- Reloading the place is the clean way to fully reset scores and worlds.
+		local ok, err = pcall(function()
+			TeleportService:Teleport(game.PlaceId, player)
+		end)
+		if not ok then
+			warn("PlaySequence: Try Again teleport failed (expected in some Studio playtests): " .. tostring(err))
+			tryAgainBtn.Text = "RESTART UNAVAILABLE IN STUDIO"
+		end
+	end)
+
+	print("=== PlaySequence complete - Aptitude reveal shown! Winner: " .. winnerKey .. " ===")
+else
+	-- ========== FALLBACK: EndRoom not found - simple text ending ==========
+	warn("PlaySequence: EndRoom (or its CamPos/Pedestals/RevealPlatform/winning pedestal) not found - using simple text ending")
+
+	TweenService:Create(worldFadeFrame,
+		TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0 }
+	):Play()
+	task.wait(1.5)
+
+	local gameCompleteLabel = Instance.new("TextLabel")
+	gameCompleteLabel.Size = UDim2.new(1, 0, 0, 60)
+	gameCompleteLabel.Position = UDim2.new(0, 0, 0.4, 0)
+	gameCompleteLabel.BackgroundTransparency = 1
+	gameCompleteLabel.Text = "CONGRATULATIONS - YOU HAVE AWAKENED"
+	gameCompleteLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	gameCompleteLabel.TextSize = 36
+	gameCompleteLabel.Font = Enum.Font.GothamBold
+	gameCompleteLabel.TextTransparency = 1
+	gameCompleteLabel.Parent = worldFadeGui
+
+	local fitLabel = Instance.new("TextLabel")
+	fitLabel.Size = UDim2.new(1, -120, 0, 60)
+	fitLabel.Position = UDim2.new(0, 60, 0.4, 70)
+	fitLabel.BackgroundTransparency = 1
+	fitLabel.TextWrapped = true
+	if allZero then
+		fitLabel.Text = "We can't decide what career is best if you didn't do any of them!"
+		fitLabel.TextColor3 = Color3.fromRGB(225, 230, 240)
+	elseif isTie then
+		fitLabel.Text = "You were tied between " .. joinCareerNames(tiedKeys)
+			.. "! Play again to see exactly which career you would be better at!"
+		fitLabel.TextColor3 = Color3.fromRGB(250, 210, 120)
+	else
+		fitLabel.Text = "Your best-fit career: " .. (CAREER_DISPLAY[winnerKey] or winnerKey)
+		fitLabel.TextColor3 = CAREER_ACCENT[winnerKey] or Color3.fromRGB(200, 210, 230)
+	end
+	fitLabel.TextSize = 24
+	fitLabel.Font = Enum.Font.GothamMedium
+	fitLabel.TextTransparency = 1
+	fitLabel.Parent = worldFadeGui
+
+	TweenService:Create(gameCompleteLabel, TweenInfo.new(1.0), { TextTransparency = 0 }):Play()
+	TweenService:Create(fitLabel, TweenInfo.new(1.0), { TextTransparency = 0 }):Play()
+
+	print("=== PlaySequence complete - Game finished! (no EndRoom) ===")
+end

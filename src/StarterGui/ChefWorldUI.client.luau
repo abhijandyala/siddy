@@ -190,6 +190,7 @@ local TicketDismissed = remotesFolder:WaitForChild("TicketDismissed", 5)
 local OrderTimedOut = remotesFolder:WaitForChild("OrderTimedOut", 5)
 local RequestUIReady = remotesFolder:WaitForChild("RequestUIReady", 5)
 local ChefUIReady = remotesFolder:WaitForChild("ChefUIReady", 5)
+local StopChefWorld = remotesFolder:WaitForChild("StopChefWorld", 5)
 
 print("[ChefUI] All remotes connected!")
 
@@ -906,6 +907,15 @@ local function startCinematicTimer()
 end
 
 local function enterCinematic()
+	-- Start every cinematic with a clean ending flag. Otherwise a stale `true`
+	-- left over from a previous cinematic/order (e.g. the serve cinematic of the
+	-- prior order, which NextTask never resets before the next order) makes the
+	-- end guard bail early -- skipping exitCinematic() + CinematicDone() and
+	-- stranding the player with the cinematic camera while the server waits
+	-- forever. This runs once at the start, before any timeout for this cinematic
+	-- could fire, so it never clobbers the timeout-failure path.
+	cinematicEnding = false
+
 	cinematicOverlay.Visible = true
 	TweenService:Create(letterboxTop, TweenInfo.new(0.3), {Size = UDim2.new(1, 0, 0.07, 0)}):Play()
 	TweenService:Create(letterboxBottom, TweenInfo.new(0.3), {Size = UDim2.new(1, 0, 0.07, 0)}):Play()
@@ -1908,9 +1918,27 @@ ShowResults.OnClientEvent:Connect(function(data)
 	
 	-- Also unlock camera so mouse can move freely
 	plr.CameraMode = Enum.CameraMode.Classic
+
+	-- Tell PlaySequence (the client-side world orchestrator) that Chef is done so
+	-- it can advance to the next world. ChefWorldServer fires a WorldCompleted
+	-- BindableEvent, but BindableEvents do NOT cross the server/client boundary,
+	-- so PlaySequence (client) never receives the server's fire and would stay
+	-- stuck waiting. We bridge it here on the client, where it actually works.
+	local worldCompleted = ReplicatedStorage:FindFirstChild("WorldCompleted")
+	if not worldCompleted then
+		worldCompleted = Instance.new("BindableEvent")
+		worldCompleted.Name = "WorldCompleted"
+		worldCompleted.Parent = ReplicatedStorage
+	end
+	worldCompleted:Fire(plr, "ChefWorld", {
+		finalScore = avgScore,
+		orderScores = orderScores,
+		rating = data.rating,
+		message = data.message,
+	})
 end)
 
-resultsContinue.MouseButton1Click:Connect(function()
+local function onResultsContinue()
 	resultsOverlay.Visible = false
 	gameState.inGame = false
 	unlockCharacter()
@@ -1920,12 +1948,16 @@ resultsContinue.MouseButton1Click:Connect(function()
 	plr.CameraMode = Enum.CameraMode.LockFirstPerson
 	
 	PlayerReady:FireServer("COMPLETE")
-end)
+end
+
+resultsContinue.MouseButton1Click:Connect(onResultsContinue)
 
 UIS.InputBegan:Connect(function(inp, gp)
 	if gp then return end
 	if inp.KeyCode == Enum.KeyCode.E and resultsOverlay.Visible then
-		resultsContinue.MouseButton1Click()
+		-- MouseButton1Click is a signal, not a function -- call the shared handler
+		-- directly instead of trying to invoke the event (which errored before).
+		onResultsContinue()
 	end
 end)
 
@@ -1949,5 +1981,58 @@ RequestUIReady.OnClientEvent:Connect(function()
 	print("[ChefUI] RequestUIReady received from server - responding with ChefUIReady")
 	ChefUIReady:FireServer()
 end)
+
+--------------------------------------------------------------
+-- SKIP / TEARDOWN HANDLER
+-- Fired by the server (StopChefWorld) when the player skips the Chef world.
+-- Fully stops every running piece of ChefWorld so nothing plays in the background.
+--------------------------------------------------------------
+local chefTornDown = false
+local function teardownChefWorld()
+	if chefTornDown then return end
+	chefTornDown = true
+	print("[ChefUI] Tearing down ChefWorld (skip)")
+
+	-- Break out of any in-progress cinematic / awaitE loops
+	cinematicTimedOut = true
+	cinematicEnding = true
+	awaitingE = false
+
+	-- Stop timers
+	pcall(stopCinematicTimer)
+
+	-- Stop all sounds (music + effects)
+	for _, s in pairs(sounds) do
+		if s then pcall(function() s:Stop() end) end
+	end
+
+	-- Unlock movement + restore mouse/camera to normal third-person
+	chefWorldStarted = false
+	gameState.inGame = false
+	pcall(unlockCharacter)
+	pcall(showMouse)
+	pcall(function()
+		plr.CameraMode = Enum.CameraMode.Classic
+		plr.CameraMinZoomDistance = 0.5
+		plr.CameraMaxZoomDistance = 128
+		workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+	end)
+
+	-- Destroy floating station labels we created in the workspace
+	for _, station in pairs(cachedStations) do
+		if station and station.Parent then
+			for _, child in ipairs(station:GetChildren()) do
+				if child:IsA("BillboardGui") and string.find(child.Name, "Label") then
+					pcall(function() child:Destroy() end)
+				end
+			end
+		end
+	end
+
+	-- Destroy the entire ChefWorld UI
+	pcall(function() sg:Destroy() end)
+end
+
+StopChefWorld.OnClientEvent:Connect(teardownChefWorld)
 
 print("[ChefUI] Ready to receive RequestUIReady from server")

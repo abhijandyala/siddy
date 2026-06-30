@@ -729,33 +729,17 @@ local function addBorderPulse(frame)
 end
 
 -- ============================================
--- SHOW MENU AFTER SLEEPING ANIMATION
+-- SHOW MENU IMMEDIATELY (menu is the first thing shown — no intro/wake-up)
 -- ============================================
 
--- Timing: Must match MenuCameraFlythrough timing
--- Cinematic ends at 6.0s, then 1s fade from black = menu appears at 7.0s
-local MENU_APPEAR_TIME = 7.5  -- Show menu after fade-in from black completes
-
-print("MenuController: Waiting " .. MENU_APPEAR_TIME .. "s for sleeping animation to complete...")
-
--- Hide all frames initially
 hideAllFrames()
+menuFrame.Visible = true
 
--- Wait for the right moment
-task.wait(MENU_APPEAR_TIME)
+print("MenuController: Main menu visible immediately")
 
--- Show the main menu with fade-in
-print("MenuController: Showing main menu with fade-in animation!")
-showFrameWithFade(menuFrame, MENU_FADE_IN_DURATION)
-
--- Start floating and border pulse animations after entrance completes
-task.delay(MENU_FADE_IN_DURATION + 0.5, function()
-	addFloatingAnimation(menuFrame)
-	addBorderPulse(menuFrame)
-	
-	-- Also set up animations for other frames (they'll be visible when switched to)
-	addBorderPulse(tutorialFrame)
-	addBorderPulse(settingsFrame)
-end)
+addFloatingAnimation(menuFrame)
+addBorderPulse(menuFrame)
+addBorderPulse(tutorialFrame)
+addBorderPulse(settingsFrame)
 
 print("MenuController: Menu is now visible!")
