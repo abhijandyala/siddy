@@ -7,6 +7,9 @@
 
 sourcemap.json
 
+# Dependencies
+node_modules/
+
 # OS / editor
 .DS_Store
 .cursor/
